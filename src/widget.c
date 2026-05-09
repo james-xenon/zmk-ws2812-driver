@@ -53,6 +53,10 @@ static bool indication_enabled = IS_ENABLED(CONFIG_WS2812_WIDGET_ENABLED_ON_STAR
 static int64_t battery_quiet_until_ms = 0;
 static int64_t last_activity_ms = 0;
 
+void ws2812_note_activity(void) {
+    last_activity_ms = k_uptime_get();
+}
+
 static struct led_rgb hex_to_rgb(uint32_t hex_color) {
     return (struct led_rgb){
         .r = (hex_color >> 16) & 0xFF,
@@ -113,7 +117,7 @@ void ws2812_set_indication_enabled(bool enabled) {
         LOG_INF("WS2812 indication disabled");
     } else {
         battery_quiet_until_ms = 0;
-        last_activity_ms = k_uptime_get();
+        ws2812_note_activity();
         LOG_INF("WS2812 indication enabled");
     }
 }
@@ -383,6 +387,7 @@ static bool watched_layer(uint8_t layer) {
 
 void ws2812_indicate_layer(void) {
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE)
+    ws2812_note_activity();
     queue_layer_blink(hex_to_rgb(CONFIG_WS2812_WIDGET_LAYER_COLOR_MANUAL));
 #endif
 }
@@ -393,7 +398,13 @@ void ws2812_indicate_layer(void) {
 static int led_layer_listener_cb(const zmk_event_t *eh) {
     const struct zmk_layer_state_changed *ev = as_zmk_layer_state_changed(eh);
 
-    if (ev == NULL || !initialized || !indication_allowed()) {
+    if (ev == NULL || !initialized) {
+        return 0;
+    }
+
+    ws2812_note_activity();
+
+    if (!indication_allowed()) {
         return 0;
     }
 
@@ -464,6 +475,7 @@ static void ws2812_warn_if_battery_below_threshold(void) {
 }
 
 void ws2812_indicate_battery(void) {
+    ws2812_note_activity();
     ws2812_warn_if_battery_below_threshold();
 }
 
@@ -492,11 +504,7 @@ static int ws2812_position_listener_cb(const zmk_event_t *eh) {
     const struct zmk_position_state_changed *ev = as_zmk_position_state_changed(eh);
 
     if (ev != NULL && ev->state) {
-        last_activity_ms = k_uptime_get();
-
-        if (indication_enabled) {
-            battery_quiet_until_ms = 0;
-        }
+        ws2812_note_activity();
     }
 
     return 0;
@@ -509,11 +517,7 @@ static int ws2812_sensor_listener_cb(const zmk_event_t *eh) {
     const struct zmk_sensor_event *ev = as_zmk_sensor_event(eh);
 
     if (ev != NULL) {
-        last_activity_ms = k_uptime_get();
-
-        if (indication_enabled) {
-            battery_quiet_until_ms = 0;
-        }
+        ws2812_note_activity();
     }
 
     return 0;
@@ -550,7 +554,7 @@ static void led_init_thread(void *d0, void *d1, void *d2) {
         return;
     }
 
-    last_activity_ms = k_uptime_get();
+    ws2812_note_activity();
 
     turn_leds_off();
 
