@@ -1,3 +1,5 @@
+#include <stdint.h>
+
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/led_strip.h>
@@ -42,6 +44,8 @@ struct blink_pattern {
     uint8_t repeat_count;
     bool smooth;
 };
+
+K_MSGQ_DEFINE(led_msgq, sizeof(struct blink_pattern), 16, 1);
 
 static bool initialized = false;
 static bool indication_enabled = IS_ENABLED(CONFIG_WS2812_WIDGET_ENABLED_ON_START);
@@ -105,6 +109,7 @@ void ws2812_set_indication_enabled(bool enabled) {
     if (!enabled) {
         k_msgq_purge(&led_msgq);
         battery_quiet_until_ms = INT64_MAX;
+        turn_leds_off();
         LOG_INF("WS2812 indication disabled");
     } else {
         battery_quiet_until_ms = 0;
@@ -245,8 +250,6 @@ static void restore_ext_power_after_blink(bool was_off_before_blink) {
 }
 
 #endif
-
-K_MSGQ_DEFINE(led_msgq, sizeof(struct blink_pattern), 16, 1);
 
 static void queue_blink(struct led_rgb color, uint16_t duration_ms, uint16_t pause_ms,
                         uint8_t repeat_count, bool smooth) {
