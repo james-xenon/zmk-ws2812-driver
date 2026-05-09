@@ -130,61 +130,6 @@ bool ws2812_get_indication_enabled(void) {
     return indication_enabled;
 }
 
-#if IS_ENABLED(CONFIG_WS2812_WIDGET_PAUSE_RGB_UNDERGLOW)
-
-static bool pause_rgb_underglow_for_blink(void) {
-    bool rgb_was_on = false;
-
-    int rc = zmk_rgb_underglow_get_state(&rgb_was_on);
-
-    if (rc < 0) {
-        LOG_WRN("WS2812 widget: failed to read RGB underglow state: %d", rc);
-        return false;
-    }
-
-    if (!rgb_was_on) {
-        return false;
-    }
-
-    rc = zmk_rgb_underglow_off();
-
-    if (rc < 0) {
-        LOG_WRN("WS2812 widget: failed to pause RGB underglow: %d", rc);
-        return false;
-    }
-
-    k_sleep(K_MSEC(CONFIG_WS2812_WIDGET_UNDERGLOW_OFF_DELAY_MS));
-
-    return true;
-}
-
-static void restore_rgb_underglow_after_blink(bool rgb_was_on) {
-    if (!rgb_was_on) {
-        return;
-    }
-
-    int rc = zmk_rgb_underglow_on();
-
-    if (rc < 0) {
-        LOG_WRN("WS2812 widget: failed to restore RGB underglow: %d", rc);
-        return;
-    }
-
-    k_sleep(K_MSEC(CONFIG_WS2812_WIDGET_UNDERGLOW_RESTORE_DELAY_MS));
-}
-
-#else
-
-static bool pause_rgb_underglow_for_blink(void) {
-    return false;
-}
-
-static void restore_rgb_underglow_after_blink(bool rgb_was_on) {
-    ARG_UNUSED(rgb_was_on);
-}
-
-#endif
-
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_USE_EXT_POWER)
 
 static const struct device *get_ext_power_device(void) {
@@ -195,6 +140,18 @@ static const struct device *get_ext_power_device(void) {
     }
 
     return ext_power;
+}
+
+static bool ext_power_is_on_now(void) {
+    const struct device *ext_power = get_ext_power_device();
+
+    if (ext_power == NULL) {
+        return false;
+    }
+
+    int state = ext_power_get(ext_power);
+
+    return state > 0;
 }
 
 static bool prepare_ext_power_for_blink(void) {
@@ -245,12 +202,77 @@ static void restore_ext_power_after_blink(bool was_off_before_blink) {
 
 #else
 
+static bool ext_power_is_on_now(void) {
+    return true;
+}
+
 static bool prepare_ext_power_for_blink(void) {
     return false;
 }
 
 static void restore_ext_power_after_blink(bool was_off_before_blink) {
     ARG_UNUSED(was_off_before_blink);
+}
+
+#endif
+
+#if IS_ENABLED(CONFIG_WS2812_WIDGET_PAUSE_RGB_UNDERGLOW)
+
+static bool pause_rgb_underglow_for_blink(void) {
+    bool rgb_state_was_on = false;
+
+    int rc = zmk_rgb_underglow_get_state(&rgb_state_was_on);
+
+    if (rc < 0) {
+        LOG_WRN("WS2812 widget: failed to read RGB underglow state: %d", rc);
+        return false;
+    }
+
+    /*
+     * Important:
+     * RGB state can be logically ON in saved ZMK state while the LED power is physically OFF.
+     * If we restore RGB in that case, the left half turns RGB on by itself during battery indication.
+     * So we only restore RGB if it was both logically ON and physically powered before the blink.
+     */
+    if (!rgb_state_was_on || !ext_power_is_on_now()) {
+        return false;
+    }
+
+    rc = zmk_rgb_underglow_off();
+
+    if (rc < 0) {
+        LOG_WRN("WS2812 widget: failed to pause RGB underglow: %d", rc);
+        return false;
+    }
+
+    k_sleep(K_MSEC(CONFIG_WS2812_WIDGET_UNDERGLOW_OFF_DELAY_MS));
+
+    return true;
+}
+
+static void restore_rgb_underglow_after_blink(bool should_restore_rgb) {
+    if (!should_restore_rgb) {
+        return;
+    }
+
+    int rc = zmk_rgb_underglow_on();
+
+    if (rc < 0) {
+        LOG_WRN("WS2812 widget: failed to restore RGB underglow: %d", rc);
+        return;
+    }
+
+    k_sleep(K_MSEC(CONFIG_WS2812_WIDGET_UNDERGLOW_RESTORE_DELAY_MS));
+}
+
+#else
+
+static bool pause_rgb_underglow_for_blink(void) {
+    return false;
+}
+
+static void restore_rgb_underglow_after_blink(bool should_restore_rgb) {
+    ARG_UNUSED(should_restore_rgb);
 }
 
 #endif
@@ -361,7 +383,7 @@ static void execute_blink_pattern(struct blink_pattern pattern) {
         return;
     }
 
-    bool rgb_was_on = pause_rgb_underglow_for_blink();
+    bool should_restore_rgb = pause_rgb_underglow_for_blink();
     bool ext_power_was_off = prepare_ext_power_for_blink();
 
     if (pattern.smooth) {
@@ -372,7 +394,7 @@ static void execute_blink_pattern(struct blink_pattern pattern) {
 
     turn_leds_off();
 
-    if (rgb_was_on) {
+    if (should_restore_rgb) {
         restore_rgb_underglow_after_blink(true);
     } else {
         restore_ext_power_after_blink(ext_power_was_off);
