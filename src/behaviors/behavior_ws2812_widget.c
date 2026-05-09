@@ -65,7 +65,6 @@ static int on_keymap_binding_released(struct zmk_behavior_binding *binding,
 }
 
 static const struct behavior_driver_api __maybe_unused behavior_ws2812_wdg_driver_api = {
-    .locality = BEHAVIOR_LOCALITY_GLOBAL,
     .binding_pressed = on_keymap_binding_pressed,
     .binding_released = on_keymap_binding_released,
 #if IS_ENABLED(CONFIG_ZMK_BEHAVIOR_METADATA)
