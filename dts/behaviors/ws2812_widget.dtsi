@@ -1,6 +1,6 @@
 / {
     behaviors {
-        /omit-if-no-ref/ ws2812_wdg: ws2812_widget {
+        /omit-if-no-ref/ ws2812_wdg: wled {
             compatible = "zmk,behavior-ws2812-widget";
             #binding-cells = <1>;
         };
