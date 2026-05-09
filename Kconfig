@@ -51,12 +51,26 @@ config WS2812_WIDGET_USE_EXT_POWER
 config WS2812_WIDGET_EXT_POWER_STARTUP_DELAY_MS
     int "Delay after enabling external power before writing LEDs"
     depends on WS2812_WIDGET_USE_EXT_POWER
-    default 80
+    default 100
 
 config WS2812_WIDGET_RESTORE_EXT_POWER_OFF
     bool "Restore external power to off if it was off before blink"
     depends on WS2812_WIDGET_USE_EXT_POWER
     default y
+
+
+# ===============================
+# Smooth blink / fade
+# ===============================
+
+config WS2812_WIDGET_LAYER_FADE_ENABLE
+    bool "Use smooth fade for layer indication"
+    default y
+
+config WS2812_WIDGET_LAYER_FADE_STEPS
+    int "Layer fade steps"
+    default 10
+    depends on WS2812_WIDGET_LAYER_FADE_ENABLE
 
 
 # ===============================
@@ -69,17 +83,17 @@ config WS2812_WIDGET_SHOW_LAYER_CHANGE
 
 config WS2812_WIDGET_LAYER_TRIGGER_0
     int "Watched layer 0"
-    default 7
+    default 6
     depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
 
 config WS2812_WIDGET_LAYER_TRIGGER_1
     int "Watched layer 1"
-    default 11
+    default 7
     depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
 
 config WS2812_WIDGET_LAYER_TRIGGER_2
     int "Watched layer 2"
-    default 255
+    default 11
     depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
 
 config WS2812_WIDGET_LAYER_COLOR_ON
@@ -116,6 +130,10 @@ config WS2812_WIDGET_LAYER_DEBOUNCE_MS
     int "Debounce layer change notifications in milliseconds"
     default 30
     depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
+
+config WS2812_WIDGET_BATTERY_COOLDOWN_AFTER_LAYER_MS
+    int "Do not show battery warning immediately after layer indication"
+    default 15000
 
 config WS2812_WIDGET_SHOW_LAYER_COLORS
     bool "Show persistent layer colors"
