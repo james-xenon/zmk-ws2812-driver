@@ -113,7 +113,6 @@ void ws2812_set_indication_enabled(bool enabled) {
     if (!enabled) {
         k_msgq_purge(&led_msgq);
         battery_quiet_until_ms = INT64_MAX;
-        turn_leds_off();
         LOG_INF("WS2812 indication disabled");
     } else {
         battery_quiet_until_ms = 0;
@@ -220,6 +219,7 @@ static void restore_ext_power_after_blink(bool was_off_before_blink) {
 
 static bool pause_rgb_underglow_for_blink(void) {
     bool rgb_state_was_on = false;
+    bool rgb_was_physically_visible = false;
 
     int rc = zmk_rgb_underglow_get_state(&rgb_state_was_on);
 
@@ -228,15 +228,22 @@ static bool pause_rgb_underglow_for_blink(void) {
         return false;
     }
 
-    /*
-     * Important:
-     * RGB state can be logically ON in saved ZMK state while the LED power is physically OFF.
-     * If we restore RGB in that case, the left half turns RGB on by itself during battery indication.
-     * So we only restore RGB if it was both logically ON and physically powered before the blink.
-     */
-    if (!rgb_state_was_on || !ext_power_is_on_now()) {
+    if (!rgb_state_was_on) {
         return false;
     }
+
+    /*
+     * Critical logic:
+     *
+     * ZMK RGB underglow can be logically ON in saved state while EXT_POWER is OFF.
+     * If we enable EXT_POWER for our battery/layer blink without first calling
+     * zmk_rgb_underglow_off(), the normal RGB effect can suddenly appear on the left half.
+     *
+     * So:
+     * - always pause logical RGB if ZMK says it is ON;
+     * - restore RGB only if it was actually physically powered before our blink.
+     */
+    rgb_was_physically_visible = ext_power_is_on_now();
 
     rc = zmk_rgb_underglow_off();
 
@@ -247,7 +254,7 @@ static bool pause_rgb_underglow_for_blink(void) {
 
     k_sleep(K_MSEC(CONFIG_WS2812_WIDGET_UNDERGLOW_OFF_DELAY_MS));
 
-    return true;
+    return rgb_was_physically_visible;
 }
 
 static void restore_rgb_underglow_after_blink(bool should_restore_rgb) {
