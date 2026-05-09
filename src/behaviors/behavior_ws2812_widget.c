@@ -26,6 +26,8 @@ static int __maybe_unused behavior_ws2812_wdg_init(const struct device *dev) {
 static int on_keymap_binding_pressed(struct zmk_behavior_binding *binding,
                                      struct zmk_behavior_binding_event event) {
 #if IS_ENABLED(CONFIG_WS2812_WIDGET)
+    ws2812_note_activity();
+
     switch (binding->param1) {
     case 1:
 #if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING) && IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY)
