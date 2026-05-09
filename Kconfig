@@ -60,6 +60,26 @@ config WS2812_WIDGET_RESTORE_EXT_POWER_OFF
 
 
 # ===============================
+# RGB underglow conflict handling
+# ===============================
+
+config WS2812_WIDGET_PAUSE_RGB_UNDERGLOW
+    bool "Temporarily pause ZMK RGB underglow while blinking"
+    depends on ZMK_RGB_UNDERGLOW
+    default y
+
+config WS2812_WIDGET_UNDERGLOW_OFF_DELAY_MS
+    int "Delay after turning ZMK RGB underglow off before blinking"
+    depends on WS2812_WIDGET_PAUSE_RGB_UNDERGLOW
+    default 120
+
+config WS2812_WIDGET_UNDERGLOW_RESTORE_DELAY_MS
+    int "Delay after restoring ZMK RGB underglow"
+    depends on WS2812_WIDGET_PAUSE_RGB_UNDERGLOW
+    default 80
+
+
+# ===============================
 # Smooth blink / fade
 # ===============================
 
