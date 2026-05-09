@@ -3,6 +3,11 @@
 #include <stdbool.h>
 
 /**
+ * @brief Mark keyboard activity for WS2812 indication inactivity timer.
+ */
+void ws2812_note_activity(void);
+
+/**
  * @brief Indicate current battery status with WS2812 LED colors/patterns.
  */
 void ws2812_indicate_battery(void);
