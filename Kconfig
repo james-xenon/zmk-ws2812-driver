@@ -40,6 +40,26 @@ config WS2812_WIDGET_COLOR_OFF
 
 
 # ===============================
+# External power handling
+# ===============================
+
+config WS2812_WIDGET_USE_EXT_POWER
+    bool "Enable external power automatically before blinking"
+    depends on ZMK_EXT_POWER
+    default y
+
+config WS2812_WIDGET_EXT_POWER_STARTUP_DELAY_MS
+    int "Delay after enabling external power before writing LEDs"
+    depends on WS2812_WIDGET_USE_EXT_POWER
+    default 80
+
+config WS2812_WIDGET_RESTORE_EXT_POWER_OFF
+    bool "Restore external power to off if it was off before blink"
+    depends on WS2812_WIDGET_USE_EXT_POWER
+    default y
+
+
+# ===============================
 # Layer indication
 # ===============================
 
@@ -79,7 +99,7 @@ config WS2812_WIDGET_LAYER_COLOR_MANUAL
 
 config WS2812_WIDGET_LAYER_BLINK_MS
     int "Layer blink duration in milliseconds"
-    default 180
+    default 1000
     depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
 
 config WS2812_WIDGET_LAYER_BLINK_REPEAT
@@ -87,13 +107,16 @@ config WS2812_WIDGET_LAYER_BLINK_REPEAT
     default 1
     depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
 
+config WS2812_WIDGET_LAYER_BLINK_PAUSE_MS
+    int "Pause between layer blinks in milliseconds"
+    default 1000
+    depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
+
 config WS2812_WIDGET_LAYER_DEBOUNCE_MS
     int "Debounce layer change notifications in milliseconds"
     default 30
     depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
 
-
-# Kept for compatibility with old configs.
 config WS2812_WIDGET_SHOW_LAYER_COLORS
     bool "Show persistent layer colors"
     default n
@@ -155,6 +178,11 @@ config WS2812_WIDGET_BATTERY_BLINK_REPEAT
     default 3
     depends on WS2812_WIDGET_SHOW_BATTERY
 
+config WS2812_WIDGET_BATTERY_BLINK_PAUSE_MS
+    int "Pause between battery blinks in milliseconds"
+    default 1000
+    depends on WS2812_WIDGET_SHOW_BATTERY
+
 config WS2812_WIDGET_BATTERY_PERIODIC_MS
     int "Battery warning repeat interval in milliseconds"
     default 60000
@@ -166,14 +194,13 @@ config WS2812_WIDGET_BATTERY_PERIODIC_MS
 # ===============================
 
 config WS2812_WIDGET_INTERVAL_MS
-    int "Interval between blinks in milliseconds"
+    int "Interval between queued blink patterns in milliseconds"
     default 180
 
 
 # ===============================
 # Connectivity
 # ===============================
-# Disabled by default in this patched version to avoid BLE reconnect noise.
 
 config WS2812_WIDGET_SHOW_CONNECTIVITY
     bool "Indicate BLE/USB connectivity status"
