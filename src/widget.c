@@ -8,6 +8,10 @@
 #include <drivers/ext_power.h>
 #endif
 
+#if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW)
+#include <zmk/rgb_underglow.h>
+#endif
+
 #include <zmk/event_manager.h>
 #include <zmk/events/layer_state_changed.h>
 
@@ -73,6 +77,61 @@ static int set_leds_color(struct led_rgb color) {
 static void turn_leds_off(void) {
     set_leds_color((struct led_rgb){0, 0, 0});
 }
+
+#if IS_ENABLED(CONFIG_WS2812_WIDGET_PAUSE_RGB_UNDERGLOW)
+
+static bool pause_rgb_underglow_for_blink(void) {
+    bool rgb_was_on = false;
+
+    int rc = zmk_rgb_underglow_get_state(&rgb_was_on);
+
+    if (rc < 0) {
+        LOG_WRN("WS2812 widget: failed to read RGB underglow state: %d", rc);
+        return false;
+    }
+
+    if (!rgb_was_on) {
+        return false;
+    }
+
+    rc = zmk_rgb_underglow_off();
+
+    if (rc < 0) {
+        LOG_WRN("WS2812 widget: failed to pause RGB underglow: %d", rc);
+        return false;
+    }
+
+    k_sleep(K_MSEC(CONFIG_WS2812_WIDGET_UNDERGLOW_OFF_DELAY_MS));
+
+    return true;
+}
+
+static void restore_rgb_underglow_after_blink(bool rgb_was_on) {
+    if (!rgb_was_on) {
+        return;
+    }
+
+    int rc = zmk_rgb_underglow_on();
+
+    if (rc < 0) {
+        LOG_WRN("WS2812 widget: failed to restore RGB underglow: %d", rc);
+        return;
+    }
+
+    k_sleep(K_MSEC(CONFIG_WS2812_WIDGET_UNDERGLOW_RESTORE_DELAY_MS));
+}
+
+#else
+
+static bool pause_rgb_underglow_for_blink(void) {
+    return false;
+}
+
+static void restore_rgb_underglow_after_blink(bool rgb_was_on) {
+    ARG_UNUSED(rgb_was_on);
+}
+
+#endif
 
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_USE_EXT_POWER)
 
@@ -230,6 +289,8 @@ static void execute_smooth_blink(struct blink_pattern pattern) {
 }
 
 static void execute_blink_pattern(struct blink_pattern pattern) {
+    bool rgb_was_on = pause_rgb_underglow_for_blink();
+
     bool ext_power_was_off = prepare_ext_power_for_blink();
 
     if (pattern.smooth) {
@@ -239,7 +300,12 @@ static void execute_blink_pattern(struct blink_pattern pattern) {
     }
 
     turn_leds_off();
-    restore_ext_power_after_blink(ext_power_was_off);
+
+    if (rgb_was_on) {
+        restore_rgb_underglow_after_blink(true);
+    } else {
+        restore_ext_power_after_blink(ext_power_was_off);
+    }
 }
 
 static bool watched_layer(uint8_t layer) {
