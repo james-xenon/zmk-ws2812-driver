@@ -40,6 +40,24 @@ config WS2812_WIDGET_COLOR_OFF
 
 
 # ===============================
+# Manual enable/disable
+# ===============================
+
+config WS2812_WIDGET_ENABLED_ON_START
+    bool "Enable WS2812 indication on boot"
+    default y
+
+config WS2812_WIDGET_AUTO_DISABLE_AFTER_INACTIVITY
+    bool "Suppress WS2812 indication after keyboard inactivity"
+    default y
+
+config WS2812_WIDGET_INACTIVITY_DISABLE_MS
+    int "Milliseconds of keyboard inactivity before WS2812 indication is suppressed"
+    default 1200000
+    depends on WS2812_WIDGET_AUTO_DISABLE_AFTER_INACTIVITY
+
+
+# ===============================
 # External power handling
 # ===============================
 
@@ -223,7 +241,7 @@ config WS2812_WIDGET_BATTERY_BLINK_PAUSE_MS
 
 config WS2812_WIDGET_BATTERY_PERIODIC_MS
     int "Battery warning repeat interval in milliseconds"
-    default 60000
+    default 180000
     depends on WS2812_WIDGET_SHOW_BATTERY
 
 
