@@ -3,8 +3,6 @@
         /omit-if-no-ref/ ws2812_wdg: ws2812_widget {
             compatible = "zmk,behavior-ws2812-widget";
             #binding-cells = <1>;
-            indicate-battery;
-            indicate-layer;
         };
     };
 };
