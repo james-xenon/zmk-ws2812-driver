@@ -1,10 +1,223 @@
-config WS2812_WIDGET
-    bool "Enable WS2812 LED widget for showing battery/layer status"
+menuconfig WS2812_WIDGET
+    bool "Enable WS2812 LED widget for keyboard status overlays"
     depends on LED_STRIP
+    select LED_STRIP_WS2812
     help
-      Enable WS2812 RGB LED widget for keyboard status indication.
+      Enables a WS2812 overlay indicator for battery reminders and layer changes.
+      This version does not leave persistent layer colors on the strip.
 
 if WS2812_WIDGET
+
+config WS2812_WIDGET_USE_RGB_UNDERGLOW_OVERLAY_API
+    bool "Temporarily suspend ZMK RGB underglow while showing indicators"
+    depends on ZMK_RGB_UNDERGLOW
+    default y
+    help
+      Uses zmk_rgb_underglow_overlay_suspend()/resume() so the widget can show
+      smooth indicators without fighting the native RGB underglow timer and
+      without saving temporary RGB off/on states to flash.
+
+config WS2812_WIDGET_FADE_STEP_MS
+    int "Fade step time in milliseconds"
+    default 30
+    range 5 100
+
+config WS2812_WIDGET_PRE_FADE_MS
+    int "Fade current lighting down before an indicator"
+    default 600
+    range 0 3000
+
+config WS2812_WIDGET_POST_FADE_MS
+    int "Fade saved lighting back after an indicator"
+    default 700
+    range 0 3000
+
+config WS2812_WIDGET_INTERVAL_MS
+    int "Interval between indicator pulses"
+    default 250
+    range 0 3000
+
+config WS2812_WIDGET_SHOW_LAYER_CHANGE
+    bool "Show temporary layer on/off indicators"
+    default y
+
+config WS2812_WIDGET_LAYER_DEBOUNCE_MS
+    int "Layer change debounce in milliseconds"
+    default 30
+    range 0 1000
+    depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
+
+config WS2812_WIDGET_LAYER_INDICATOR_MASK
+    hex "Layer mask for layer indicators"
+    default 0xFFFFFFFE
+    depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
+    help
+      Bit mask of layers that should trigger the indicator.
+      Default 0xFFFFFFFE means all layers except layer 0.
+
+config WS2812_WIDGET_LAYER_ON_COLOR
+    hex "Layer enabled indicator color"
+    default 0xFFFFFF
+    depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
+
+config WS2812_WIDGET_LAYER_OFF_COLOR
+    hex "Layer disabled indicator color"
+    default 0xFF0000
+    depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
+
+config WS2812_WIDGET_LAYER_BLINK_MS
+    int "Legacy layer blink duration in milliseconds"
+    default 100
+    depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
+    help
+      Kept for compatibility with old configs. The new smooth overlay uses
+      WS2812_WIDGET_LAYER_HOLD_MS and fade timings instead.
+
+config WS2812_WIDGET_LAYER_HOLD_MS
+    int "Layer indicator full-bright hold time in milliseconds"
+    default 1000
+    range 100 5000
+    depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
+
+config WS2812_WIDGET_LAYER_REPEAT_COUNT
+    int "Layer indicator pulse count"
+    default 1
+    range 1 10
+    depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
+
+config WS2812_WIDGET_SHOW_LAYER_COLORS
+    bool "Legacy persistent layer colors"
+    default n
+    depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
+    help
+      Kept only so old configs do not break. This overlay implementation does
+      not use persistent layer colors, because persistent colors conflict with
+      normal RGB underglow.
+
+config WS2812_WIDGET_LAYER_COLOR
+    hex "Legacy layer change color"
+    default 0xFFFFFF
+    depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
+
+config WS2812_WIDGET_LAYER_0_COLOR
+    hex "Legacy layer 0 color"
+    default 0x000000
+    depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
+
+config WS2812_WIDGET_LAYER_1_COLOR
+    hex "Legacy layer 1 color"
+    default 0xFF0000
+    depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
+
+config WS2812_WIDGET_LAYER_2_COLOR
+    hex "Legacy layer 2 color"
+    default 0x00FF00
+    depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
+
+config WS2812_WIDGET_LAYER_3_COLOR
+    hex "Legacy layer 3 color"
+    default 0xFFFF00
+    depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
+
+config WS2812_WIDGET_LAYER_4_COLOR
+    hex "Legacy layer 4 color"
+    default 0x0000FF
+    depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
+
+config WS2812_WIDGET_LAYER_5_COLOR
+    hex "Legacy layer 5 color"
+    default 0xFF00FF
+    depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
+
+config WS2812_WIDGET_LAYER_6_COLOR
+    hex "Legacy layer 6 color"
+    default 0x00FFFF
+    depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
+
+config WS2812_WIDGET_SHOW_BATTERY
+    bool "Show battery indicators"
+    depends on ZMK_BATTERY_REPORTING
+    default y
+
+config WS2812_WIDGET_SHOW_BATTERY_ON_START
+    bool "Show battery indicator on startup"
+    depends on WS2812_WIDGET_SHOW_BATTERY
+    default n
+
+config WS2812_WIDGET_BATTERY_REMINDER
+    bool "Show periodic red battery reminder"
+    depends on WS2812_WIDGET_SHOW_BATTERY
+    default y
+
+config WS2812_WIDGET_BATTERY_REMINDER_INTERVAL_MS
+    int "Battery reminder interval in milliseconds"
+    depends on WS2812_WIDGET_BATTERY_REMINDER
+    default 180000
+    range 10000 3600000
+
+config WS2812_WIDGET_BATTERY_REMINDER_COLOR
+    hex "Battery reminder color"
+    depends on WS2812_WIDGET_BATTERY_REMINDER
+    default 0xFF0000
+
+config WS2812_WIDGET_BATTERY_REMINDER_REPEAT_COUNT
+    int "Battery reminder pulse count"
+    depends on WS2812_WIDGET_BATTERY_REMINDER
+    default 3
+    range 1 10
+
+config WS2812_WIDGET_BATTERY_HOLD_MS
+    int "Battery reminder full-bright hold time in milliseconds"
+    depends on WS2812_WIDGET_SHOW_BATTERY
+    default 700
+    range 100 5000
+
+config WS2812_WIDGET_BATTERY_BLINK_MS
+    int "Legacy battery blink duration in milliseconds"
+    depends on WS2812_WIDGET_SHOW_BATTERY
+    default 200
+    help
+      Kept for compatibility with old configs. The new smooth overlay uses
+      WS2812_WIDGET_BATTERY_HOLD_MS and fade timings instead.
+
+config WS2812_WIDGET_BATTERY_LEVEL_HIGH
+    int "High battery level percentage"
+    depends on WS2812_WIDGET_SHOW_BATTERY
+    default 80
+    range 0 100
+
+config WS2812_WIDGET_BATTERY_LEVEL_LOW
+    int "Low battery level percentage"
+    depends on WS2812_WIDGET_SHOW_BATTERY
+    default 20
+    range 0 100
+
+config WS2812_WIDGET_BATTERY_LEVEL_CRITICAL
+    int "Critical battery level percentage"
+    depends on WS2812_WIDGET_SHOW_BATTERY
+    default 5
+    range 0 100
+
+config WS2812_WIDGET_BATTERY_CRITICAL_REPEAT_COUNT
+    int "Critical battery warning pulse count"
+    depends on WS2812_WIDGET_SHOW_BATTERY
+    default 5
+    range 1 10
+
+config WS2812_WIDGET_SHOW_CONNECTIVITY
+    bool "Show connectivity indicator"
+    depends on ZMK_BLE
+    default n
+
+config WS2812_WIDGET_CONN_SHOW_USB
+    bool "Show USB connection status"
+    depends on ZMK_USB && WS2812_WIDGET_SHOW_CONNECTIVITY
+    default n
+
+config WS2812_WIDGET_CONN_BLINK_MS
+    int "Legacy connectivity blink duration in milliseconds"
+    default 150
+    depends on WS2812_WIDGET_SHOW_CONNECTIVITY
 
 config WS2812_WIDGET_COLOR_RED
     hex "Red color value"
@@ -38,172 +251,6 @@ config WS2812_WIDGET_COLOR_OFF
     hex "Off/black color value"
     default 0x000000
 
-
-# ===============================
-# Manual enable/disable
-# ===============================
-
-config WS2812_WIDGET_ENABLED_ON_START
-    bool "Enable WS2812 indication on boot"
-    default y
-
-config WS2812_WIDGET_AUTO_DISABLE_AFTER_INACTIVITY
-    bool "Suppress WS2812 indication after keyboard inactivity"
-    default y
-
-config WS2812_WIDGET_INACTIVITY_DISABLE_MS
-    int "Milliseconds of keyboard inactivity before WS2812 indication is suppressed"
-    default 1200000
-    depends on WS2812_WIDGET_AUTO_DISABLE_AFTER_INACTIVITY
-
-
-# ===============================
-# External power handling
-# ===============================
-
-config WS2812_WIDGET_USE_EXT_POWER
-    bool "Enable external power automatically before blinking"
-    depends on ZMK_EXT_POWER
-    default y
-
-config WS2812_WIDGET_EXT_POWER_STARTUP_DELAY_MS
-    int "Delay after enabling external power before writing LEDs"
-    depends on WS2812_WIDGET_USE_EXT_POWER
-    default 100
-
-config WS2812_WIDGET_RESTORE_EXT_POWER_OFF
-    bool "Restore external power to off if it was off before blink"
-    depends on WS2812_WIDGET_USE_EXT_POWER
-    default y
-
-
-# ===============================
-# RGB underglow conflict handling
-# ===============================
-
-config WS2812_WIDGET_PAUSE_RGB_UNDERGLOW
-    bool "Temporarily pause ZMK RGB underglow while blinking"
-    depends on ZMK_RGB_UNDERGLOW
-    default y
-
-config WS2812_WIDGET_UNDERGLOW_OFF_DELAY_MS
-    int "Delay after turning ZMK RGB underglow off before blinking"
-    depends on WS2812_WIDGET_PAUSE_RGB_UNDERGLOW
-    default 120
-
-config WS2812_WIDGET_UNDERGLOW_RESTORE_DELAY_MS
-    int "Delay after restoring ZMK RGB underglow"
-    depends on WS2812_WIDGET_PAUSE_RGB_UNDERGLOW
-    default 80
-
-
-# ===============================
-# Smooth blink / fade
-# ===============================
-
-config WS2812_WIDGET_LAYER_FADE_ENABLE
-    bool "Use smooth fade for layer indication"
-    default y
-
-config WS2812_WIDGET_LAYER_FADE_STEPS
-    int "Layer fade steps"
-    default 10
-    depends on WS2812_WIDGET_LAYER_FADE_ENABLE
-
-
-# ===============================
-# Layer indication
-# ===============================
-
-config WS2812_WIDGET_SHOW_LAYER_CHANGE
-    bool "Blink on selected layer changes"
-    default y
-
-config WS2812_WIDGET_LAYER_TRIGGER_0
-    int "Watched layer 0"
-    default 6
-    depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
-
-config WS2812_WIDGET_LAYER_TRIGGER_1
-    int "Watched layer 1"
-    default 7
-    depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
-
-config WS2812_WIDGET_LAYER_TRIGGER_2
-    int "Watched layer 2"
-    default 11
-    depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
-
-config WS2812_WIDGET_LAYER_COLOR_ON
-    hex "Layer ON blink color"
-    default 0xFFFFFF
-    depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
-
-config WS2812_WIDGET_LAYER_COLOR_OFF
-    hex "Layer OFF blink color"
-    default 0xFF0000
-    depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
-
-config WS2812_WIDGET_LAYER_COLOR_MANUAL
-    hex "Manual layer indication blink color"
-    default 0xFFFFFF
-    depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
-
-config WS2812_WIDGET_LAYER_BLINK_MS
-    int "Layer blink duration in milliseconds"
-    default 1000
-    depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
-
-config WS2812_WIDGET_LAYER_BLINK_REPEAT
-    int "Layer blink repeat count"
-    default 1
-    depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
-
-config WS2812_WIDGET_LAYER_BLINK_PAUSE_MS
-    int "Pause between layer blinks in milliseconds"
-    default 1000
-    depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
-
-config WS2812_WIDGET_LAYER_DEBOUNCE_MS
-    int "Debounce layer change notifications in milliseconds"
-    default 30
-    depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
-
-config WS2812_WIDGET_BATTERY_COOLDOWN_AFTER_LAYER_MS
-    int "Do not show battery warning immediately after layer indication"
-    default 15000
-
-config WS2812_WIDGET_SHOW_LAYER_COLORS
-    bool "Show persistent layer colors"
-    default n
-    help
-      Compatibility option only. This patched version does not keep LEDs on for layers.
-
-
-# ===============================
-# Battery indication
-# ===============================
-
-config WS2812_WIDGET_SHOW_BATTERY
-    bool "Indicate battery level"
-    depends on ZMK_BATTERY_REPORTING
-    default y
-
-config WS2812_WIDGET_BATTERY_LEVEL_HIGH
-    int "High battery level percentage"
-    default 80
-    depends on WS2812_WIDGET_SHOW_BATTERY
-
-config WS2812_WIDGET_BATTERY_LEVEL_LOW
-    int "Low battery level percentage"
-    default 20
-    depends on WS2812_WIDGET_SHOW_BATTERY
-
-config WS2812_WIDGET_BATTERY_LEVEL_CRITICAL
-    int "Critical battery level percentage"
-    default 90
-    depends on WS2812_WIDGET_SHOW_BATTERY
-
 config WS2812_WIDGET_BATTERY_COLOR_HIGH
     hex "High battery level color"
     default 0x00FF00
@@ -223,54 +270,6 @@ config WS2812_WIDGET_BATTERY_COLOR_CRITICAL
     hex "Critical battery level color"
     default 0xFF0000
     depends on WS2812_WIDGET_SHOW_BATTERY
-
-config WS2812_WIDGET_BATTERY_BLINK_MS
-    int "Battery blink duration in milliseconds"
-    default 180
-    depends on WS2812_WIDGET_SHOW_BATTERY
-
-config WS2812_WIDGET_BATTERY_BLINK_REPEAT
-    int "Battery blink repeat count"
-    default 3
-    depends on WS2812_WIDGET_SHOW_BATTERY
-
-config WS2812_WIDGET_BATTERY_BLINK_PAUSE_MS
-    int "Pause between battery blinks in milliseconds"
-    default 1000
-    depends on WS2812_WIDGET_SHOW_BATTERY
-
-config WS2812_WIDGET_BATTERY_PERIODIC_MS
-    int "Battery warning repeat interval in milliseconds"
-    default 180000
-    depends on WS2812_WIDGET_SHOW_BATTERY
-
-
-# ===============================
-# General timing
-# ===============================
-
-config WS2812_WIDGET_INTERVAL_MS
-    int "Interval between queued blink patterns in milliseconds"
-    default 180
-
-
-# ===============================
-# Connectivity
-# ===============================
-
-config WS2812_WIDGET_SHOW_CONNECTIVITY
-    bool "Indicate BLE/USB connectivity status"
-    default n
-
-config WS2812_WIDGET_CONN_BLINK_MS
-    int "Connectivity blink duration in milliseconds"
-    default 150
-    depends on WS2812_WIDGET_SHOW_CONNECTIVITY
-
-config WS2812_WIDGET_CONN_SHOW_USB
-    bool "Show USB connection status"
-    depends on ZMK_USB && WS2812_WIDGET_SHOW_CONNECTIVITY
-    default n
 
 config WS2812_WIDGET_CONN_COLOR_USB
     hex "USB connected color"
