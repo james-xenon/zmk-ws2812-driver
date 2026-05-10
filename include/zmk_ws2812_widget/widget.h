@@ -1,42 +1,12 @@
 #pragma once
 
-#include <stdbool.h>
+#include <stdint.h>
 
-/**
- * @brief Mark keyboard activity for WS2812 indication inactivity timer.
- */
-void ws2812_note_activity(void);
-
-/**
- * @brief Indicate current battery status with WS2812 LED colors/patterns.
- */
+/** @brief Show the configured battery indicator pattern. */
 void ws2812_indicate_battery(void);
 
-/**
- * @brief Indicate current connectivity status with WS2812 LED colors/patterns.
- */
+/** @brief Show a simple connectivity indicator pattern, if enabled. */
 void ws2812_indicate_connectivity(void);
 
-/**
- * @brief Indicate current layer with WS2812 LED colors/patterns.
- */
+/** @brief Show the current layer as a temporary overlay indicator. */
 void ws2812_indicate_layer(void);
-
-/**
- * @brief Toggle all automatic/manual WS2812 indication.
- *
- * This does not affect normal ZMK RGB underglow.
- */
-void ws2812_toggle_indication_enabled(void);
-
-/**
- * @brief Force enable/disable all WS2812 indication.
- *
- * This does not affect normal ZMK RGB underglow.
- */
-void ws2812_set_indication_enabled(bool enabled);
-
-/**
- * @brief Returns whether WS2812 indication is manually enabled.
- */
-bool ws2812_get_indication_enabled(void);
