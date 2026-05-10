@@ -1,26 +1,24 @@
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
-#include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/led_strip.h>
+#include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/util.h>
 
-#if IS_ENABLED(CONFIG_ZMK_EXT_POWER)
-#include <drivers/ext_power.h>
-#endif
+#include <zmk/activity.h>
+#include <zmk/battery.h>
+#include <zmk/event_manager.h>
+#include <zmk/events/activity_state_changed.h>
+#include <zmk/events/battery_state_changed.h>
+#include <zmk/events/layer_state_changed.h>
+#include <zmk/keymap.h>
 
 #if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW)
 #include <zmk/rgb_underglow.h>
-#endif
-
-#include <zmk/event_manager.h>
-#include <zmk/events/layer_state_changed.h>
-#include <zmk/events/position_state_changed.h>
-#include <zmk/events/sensor_event.h>
-
-#if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING)
-#include <zmk/battery.h>
 #endif
 
 #include <zmk_ws2812_widget/widget.h>
@@ -33,29 +31,28 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #error "WS2812 widget chosen node zmk,ws2812-widget not found"
 #endif
 
-#define NUM_PIXELS DT_PROP(WS2812_STRIP_NODE, chain_length)
+#define WS2812_NUM_PIXELS DT_PROP(WS2812_STRIP_NODE, chain_length)
+
+BUILD_ASSERT(CONFIG_WS2812_WIDGET_FADE_STEP_MS > 0,
+             "CONFIG_WS2812_WIDGET_FADE_STEP_MS must be greater than zero");
 
 static const struct device *led_strip = DEVICE_DT_GET(WS2812_STRIP_NODE);
 
-struct blink_pattern {
+struct indicator_request {
     struct led_rgb color;
-    uint16_t duration_ms;
-    uint16_t pause_ms;
+    uint16_t fade_in_ms;
+    uint16_t hold_ms;
+    uint16_t fade_out_ms;
+    uint16_t gap_ms;
     uint8_t repeat_count;
-    bool smooth;
 };
 
-K_MSGQ_DEFINE(led_msgq, sizeof(struct blink_pattern), 16, 1);
+static struct led_rgb work_pixels[WS2812_NUM_PIXELS];
+static struct led_rgb restore_pixels[WS2812_NUM_PIXELS];
+static bool initialized;
+static bool activity_active = true;
 
-static bool initialized = false;
-static bool indication_enabled = IS_ENABLED(CONFIG_WS2812_WIDGET_ENABLED_ON_START);
-
-static int64_t battery_quiet_until_ms = 0;
-static int64_t last_activity_ms = 0;
-
-void ws2812_note_activity(void) {
-    last_activity_ms = k_uptime_get();
-}
+K_MSGQ_DEFINE(indicator_msgq, sizeof(struct indicator_request), 12, 1);
 
 static struct led_rgb hex_to_rgb(uint32_t hex_color) {
     return (struct led_rgb){
@@ -65,515 +62,383 @@ static struct led_rgb hex_to_rgb(uint32_t hex_color) {
     };
 }
 
-static struct led_rgb scale_rgb(struct led_rgb color, uint8_t level, uint8_t max_level) {
-    if (max_level == 0) {
-        return (struct led_rgb){0, 0, 0};
+static int update_pixels(const struct led_rgb *pixels) {
+    return led_strip_update_rgb(led_strip, pixels, WS2812_NUM_PIXELS);
+}
+
+static int set_all_pixels(struct led_rgb color) {
+    for (int i = 0; i < WS2812_NUM_PIXELS; i++) {
+        work_pixels[i] = color;
+    }
+
+    return update_pixels(work_pixels);
+}
+
+static struct led_rgb lerp_rgb(struct led_rgb from, struct led_rgb to, uint16_t step,
+                               uint16_t steps) {
+    if (steps == 0) {
+        return to;
     }
 
     return (struct led_rgb){
-        .r = (color.r * level) / max_level,
-        .g = (color.g * level) / max_level,
-        .b = (color.b * level) / max_level,
+        .r = from.r + (((int)to.r - (int)from.r) * step) / steps,
+        .g = from.g + (((int)to.g - (int)from.g) * step) / steps,
+        .b = from.b + (((int)to.b - (int)from.b) * step) / steps,
     };
 }
 
-static int set_leds_color(struct led_rgb color) {
-    struct led_rgb pixels[NUM_PIXELS];
-
-    for (int i = 0; i < NUM_PIXELS; i++) {
-        pixels[i] = color;
+static uint16_t fade_steps(uint16_t fade_ms) {
+    if (fade_ms == 0) {
+        return 0;
     }
 
-    return led_strip_update_rgb(led_strip, pixels, NUM_PIXELS);
+    return MAX(1, fade_ms / CONFIG_WS2812_WIDGET_FADE_STEP_MS);
 }
 
-static void turn_leds_off(void) {
-    set_leds_color((struct led_rgb){0, 0, 0});
-}
+static void fade_pixels_to_color(const struct led_rgb *from, struct led_rgb to, uint16_t fade_ms) {
+    uint16_t steps = fade_steps(fade_ms);
 
-static bool inactivity_suppresses_indication(void) {
-#if IS_ENABLED(CONFIG_WS2812_WIDGET_AUTO_DISABLE_AFTER_INACTIVITY)
-    if (last_activity_ms <= 0) {
-        return false;
+    if (steps == 0) {
+        set_all_pixels(to);
+        return;
     }
 
-    return (k_uptime_get() - last_activity_ms) >= CONFIG_WS2812_WIDGET_INACTIVITY_DISABLE_MS;
-#else
-    return false;
-#endif
-}
+    uint16_t delay_ms = MAX(1, fade_ms / steps);
 
-static bool indication_allowed(void) {
-    return indication_enabled && !inactivity_suppresses_indication();
-}
-
-void ws2812_set_indication_enabled(bool enabled) {
-    indication_enabled = enabled;
-
-    if (!enabled) {
-        k_msgq_purge(&led_msgq);
-        battery_quiet_until_ms = INT64_MAX;
-        LOG_INF("WS2812 indication disabled");
-    } else {
-        battery_quiet_until_ms = 0;
-        ws2812_note_activity();
-        LOG_INF("WS2812 indication enabled");
-    }
-}
-
-void ws2812_toggle_indication_enabled(void) {
-    ws2812_set_indication_enabled(!indication_enabled);
-}
-
-bool ws2812_get_indication_enabled(void) {
-    return indication_enabled;
-}
-
-#if IS_ENABLED(CONFIG_WS2812_WIDGET_USE_EXT_POWER)
-
-static const struct device *get_ext_power_device(void) {
-    const struct device *ext_power = device_get_binding("EXT_POWER");
-
-    if (ext_power == NULL) {
-        LOG_WRN("WS2812 widget: EXT_POWER device not found");
-    }
-
-    return ext_power;
-}
-
-static bool ext_power_is_on_now(void) {
-    const struct device *ext_power = get_ext_power_device();
-
-    if (ext_power == NULL) {
-        return false;
-    }
-
-    int state = ext_power_get(ext_power);
-
-    return state > 0;
-}
-
-static bool prepare_ext_power_for_blink(void) {
-    const struct device *ext_power = get_ext_power_device();
-
-    if (ext_power == NULL) {
-        return false;
-    }
-
-    int state = ext_power_get(ext_power);
-    bool was_off = state <= 0;
-
-    if (was_off) {
-        int rc = ext_power_enable(ext_power);
-
-        if (rc < 0) {
-            LOG_WRN("WS2812 widget: failed to enable EXT_POWER: %d", rc);
-            return false;
+    for (uint16_t step = 1; step <= steps; step++) {
+        for (int i = 0; i < WS2812_NUM_PIXELS; i++) {
+            work_pixels[i] = lerp_rgb(from[i], to, step, steps);
         }
 
-        k_sleep(K_MSEC(CONFIG_WS2812_WIDGET_EXT_POWER_STARTUP_DELAY_MS));
+        update_pixels(work_pixels);
+        k_sleep(K_MSEC(delay_ms));
     }
-
-    return was_off;
 }
 
-static void restore_ext_power_after_blink(bool was_off_before_blink) {
-#if IS_ENABLED(CONFIG_WS2812_WIDGET_RESTORE_EXT_POWER_OFF)
-    if (!was_off_before_blink) {
+static void fade_color_to_pixels(struct led_rgb from, const struct led_rgb *to, uint16_t fade_ms) {
+    uint16_t steps = fade_steps(fade_ms);
+
+    if (steps == 0) {
+        update_pixels(to);
         return;
     }
 
-    const struct device *ext_power = get_ext_power_device();
+    uint16_t delay_ms = MAX(1, fade_ms / steps);
 
-    if (ext_power == NULL) {
+    for (uint16_t step = 1; step <= steps; step++) {
+        for (int i = 0; i < WS2812_NUM_PIXELS; i++) {
+            work_pixels[i] = lerp_rgb(from, to[i], step, steps);
+        }
+
+        update_pixels(work_pixels);
+        k_sleep(K_MSEC(delay_ms));
+    }
+}
+
+static void fade_color_to_color(struct led_rgb from, struct led_rgb to, uint16_t fade_ms) {
+    uint16_t steps = fade_steps(fade_ms);
+
+    if (steps == 0) {
+        set_all_pixels(to);
         return;
     }
 
-    int rc = ext_power_disable(ext_power);
+    uint16_t delay_ms = MAX(1, fade_ms / steps);
 
-    if (rc < 0) {
-        LOG_WRN("WS2812 widget: failed to restore EXT_POWER off: %d", rc);
+    for (uint16_t step = 1; step <= steps; step++) {
+        struct led_rgb color = lerp_rgb(from, to, step, steps);
+        set_all_pixels(color);
+        k_sleep(K_MSEC(delay_ms));
     }
-#else
-    ARG_UNUSED(was_off_before_blink);
+}
+
+static void fill_restore_pixels_black(void) {
+    memset(restore_pixels, 0, sizeof(restore_pixels));
+}
+
+static bool suspend_underglow_and_snapshot(void) {
+    fill_restore_pixels_black();
+
+#if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW) &&                                                  \
+    IS_ENABLED(CONFIG_WS2812_WIDGET_USE_RGB_UNDERGLOW_OVERLAY_API)
+    bool was_on = false;
+    size_t snapshot_count = 0;
+    int rc = zmk_rgb_underglow_overlay_suspend(restore_pixels, WS2812_NUM_PIXELS,
+                                               &snapshot_count, &was_on);
+    if (rc == 0) {
+        return was_on && snapshot_count > 0;
+    }
+
+    LOG_WRN("Failed to suspend RGB underglow overlay API: %d", rc);
 #endif
-}
 
-#else
-
-static bool ext_power_is_on_now(void) {
-    return true;
-}
-
-static bool prepare_ext_power_for_blink(void) {
     return false;
 }
 
-static void restore_ext_power_after_blink(bool was_off_before_blink) {
-    ARG_UNUSED(was_off_before_blink);
-}
-
+static void resume_underglow(void) {
+#if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW) &&                                                  \
+    IS_ENABLED(CONFIG_WS2812_WIDGET_USE_RGB_UNDERGLOW_OVERLAY_API)
+    int rc = zmk_rgb_underglow_overlay_resume();
+    if (rc != 0) {
+        LOG_WRN("Failed to resume RGB underglow overlay API: %d", rc);
+    }
 #endif
-
-#if IS_ENABLED(CONFIG_WS2812_WIDGET_PAUSE_RGB_UNDERGLOW)
-
-static bool pause_rgb_underglow_for_blink(void) {
-    bool rgb_state_was_on = false;
-    bool rgb_was_physically_visible = false;
-
-    int rc = zmk_rgb_underglow_get_state(&rgb_state_was_on);
-
-    if (rc < 0) {
-        LOG_WRN("WS2812 widget: failed to read RGB underglow state: %d", rc);
-        return false;
-    }
-
-    if (!rgb_state_was_on) {
-        return false;
-    }
-
-    /*
-     * Critical logic:
-     *
-     * ZMK RGB underglow can be logically ON in saved state while EXT_POWER is OFF.
-     * If we enable EXT_POWER for our battery/layer blink without first calling
-     * zmk_rgb_underglow_off(), the normal RGB effect can suddenly appear on the left half.
-     *
-     * So:
-     * - always pause logical RGB if ZMK says it is ON;
-     * - restore RGB only if it was actually physically powered before our blink.
-     */
-    rgb_was_physically_visible = ext_power_is_on_now();
-
-    rc = zmk_rgb_underglow_off();
-
-    if (rc < 0) {
-        LOG_WRN("WS2812 widget: failed to pause RGB underglow: %d", rc);
-        return false;
-    }
-
-    k_sleep(K_MSEC(CONFIG_WS2812_WIDGET_UNDERGLOW_OFF_DELAY_MS));
-
-    return rgb_was_physically_visible;
 }
 
-static void restore_rgb_underglow_after_blink(bool should_restore_rgb) {
-    if (!should_restore_rgb) {
+static void execute_indicator_request(const struct indicator_request *request) {
+    static const struct led_rgb black = {.r = 0, .g = 0, .b = 0};
+
+    if (!activity_active) {
         return;
     }
 
-    int rc = zmk_rgb_underglow_on();
+    bool restore_underglow = suspend_underglow_and_snapshot();
 
-    if (rc < 0) {
-        LOG_WRN("WS2812 widget: failed to restore RGB underglow: %d", rc);
+    if (restore_underglow) {
+        fade_pixels_to_color(restore_pixels, black, CONFIG_WS2812_WIDGET_PRE_FADE_MS);
+    } else {
+        set_all_pixels(black);
+    }
+
+    for (uint8_t i = 0; i < request->repeat_count; i++) {
+        fade_color_to_color(black, request->color, request->fade_in_ms);
+        k_sleep(K_MSEC(request->hold_ms));
+        fade_color_to_color(request->color, black, request->fade_out_ms);
+
+        if (request->gap_ms > 0 && i + 1 < request->repeat_count) {
+            k_sleep(K_MSEC(request->gap_ms));
+        }
+    }
+
+    if (restore_underglow) {
+        fade_color_to_pixels(black, restore_pixels, CONFIG_WS2812_WIDGET_POST_FADE_MS);
+    } else {
+        set_all_pixels(black);
+    }
+
+    resume_underglow();
+}
+
+static void enqueue_indicator(struct indicator_request request) {
+    if (!initialized || !activity_active) {
         return;
     }
 
-    k_sleep(K_MSEC(CONFIG_WS2812_WIDGET_UNDERGLOW_RESTORE_DELAY_MS));
-}
-
-#else
-
-static bool pause_rgb_underglow_for_blink(void) {
-    return false;
-}
-
-static void restore_rgb_underglow_after_blink(bool should_restore_rgb) {
-    ARG_UNUSED(should_restore_rgb);
-}
-
-#endif
-
-static void queue_blink(struct led_rgb color, uint16_t duration_ms, uint16_t pause_ms,
-                        uint8_t repeat_count, bool smooth) {
-    if (!indication_allowed()) {
-        return;
+    int rc = k_msgq_put(&indicator_msgq, &request, K_NO_WAIT);
+    if (rc != 0) {
+        LOG_WRN("WS2812 indicator queue full, dropping request: %d", rc);
     }
+}
 
-    struct blink_pattern pattern = {
-        .color = color,
-        .duration_ms = duration_ms,
-        .pause_ms = pause_ms,
-        .repeat_count = repeat_count,
-        .smooth = smooth,
+static void enqueue_layer_indicator(bool enabled) {
+#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE)
+    struct indicator_request request = {
+        .color = hex_to_rgb(enabled ? CONFIG_WS2812_WIDGET_LAYER_ON_COLOR
+                                    : CONFIG_WS2812_WIDGET_LAYER_OFF_COLOR),
+        .fade_in_ms = CONFIG_WS2812_WIDGET_PRE_FADE_MS,
+        .hold_ms = CONFIG_WS2812_WIDGET_LAYER_HOLD_MS,
+        .fade_out_ms = CONFIG_WS2812_WIDGET_POST_FADE_MS,
+        .gap_ms = CONFIG_WS2812_WIDGET_INTERVAL_MS,
+        .repeat_count = CONFIG_WS2812_WIDGET_LAYER_REPEAT_COUNT,
     };
 
-    int rc = k_msgq_put(&led_msgq, &pattern, K_NO_WAIT);
-
-    if (rc < 0) {
-        LOG_WRN("WS2812 blink queue full, dropping blink");
-    }
+    enqueue_indicator(request);
+#endif
 }
 
-static void queue_layer_blink(struct led_rgb color) {
-    if (!indication_allowed()) {
-        return;
+#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY)
+static struct led_rgb get_battery_color(uint8_t battery_level) {
+    if (battery_level == 0) {
+        return hex_to_rgb(CONFIG_WS2812_WIDGET_COLOR_OFF);
     }
 
-    battery_quiet_until_ms =
-        k_uptime_get() + CONFIG_WS2812_WIDGET_BATTERY_COOLDOWN_AFTER_LAYER_MS;
+    if (battery_level >= CONFIG_WS2812_WIDGET_BATTERY_LEVEL_HIGH) {
+        return hex_to_rgb(CONFIG_WS2812_WIDGET_BATTERY_COLOR_HIGH);
+    }
 
-    k_msgq_purge(&led_msgq);
+    if (battery_level >= CONFIG_WS2812_WIDGET_BATTERY_LEVEL_LOW) {
+        return hex_to_rgb(CONFIG_WS2812_WIDGET_BATTERY_COLOR_MEDIUM);
+    }
 
-    queue_blink(color,
-                CONFIG_WS2812_WIDGET_LAYER_BLINK_MS,
-                CONFIG_WS2812_WIDGET_LAYER_BLINK_PAUSE_MS,
-                CONFIG_WS2812_WIDGET_LAYER_BLINK_REPEAT,
-                IS_ENABLED(CONFIG_WS2812_WIDGET_LAYER_FADE_ENABLE));
+    if (battery_level <= CONFIG_WS2812_WIDGET_BATTERY_LEVEL_CRITICAL) {
+        return hex_to_rgb(CONFIG_WS2812_WIDGET_BATTERY_COLOR_CRITICAL);
+    }
+
+    return hex_to_rgb(CONFIG_WS2812_WIDGET_BATTERY_COLOR_LOW);
+}
+#endif
+
+void ws2812_indicate_battery(void) {
+#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY)
+    struct indicator_request request = {
+        .color = hex_to_rgb(CONFIG_WS2812_WIDGET_BATTERY_REMINDER_COLOR),
+        .fade_in_ms = CONFIG_WS2812_WIDGET_PRE_FADE_MS,
+        .hold_ms = CONFIG_WS2812_WIDGET_BATTERY_HOLD_MS,
+        .fade_out_ms = CONFIG_WS2812_WIDGET_POST_FADE_MS,
+        .gap_ms = CONFIG_WS2812_WIDGET_INTERVAL_MS,
+        .repeat_count = CONFIG_WS2812_WIDGET_BATTERY_REMINDER_REPEAT_COUNT,
+    };
+
+    enqueue_indicator(request);
+#endif
 }
 
-static void execute_simple_blink(struct blink_pattern pattern) {
-    for (int i = 0; i < pattern.repeat_count; i++) {
-        if (!indication_allowed()) {
-            turn_leds_off();
-            return;
-        }
+void ws2812_indicate_connectivity(void) {
+#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_CONNECTIVITY)
+    struct indicator_request request = {
+        .color = hex_to_rgb(CONFIG_WS2812_WIDGET_CONN_COLOR_CONNECTED),
+        .fade_in_ms = CONFIG_WS2812_WIDGET_PRE_FADE_MS,
+        .hold_ms = 500,
+        .fade_out_ms = CONFIG_WS2812_WIDGET_POST_FADE_MS,
+        .gap_ms = CONFIG_WS2812_WIDGET_INTERVAL_MS,
+        .repeat_count = 1,
+    };
 
-        set_leds_color(pattern.color);
-        k_sleep(K_MSEC(pattern.duration_ms));
-
-        turn_leds_off();
-
-        if (pattern.pause_ms > 0 && i < pattern.repeat_count - 1) {
-            k_sleep(K_MSEC(pattern.pause_ms));
-        }
-    }
-}
-
-static void execute_smooth_blink(struct blink_pattern pattern) {
-    uint8_t steps = CONFIG_WS2812_WIDGET_LAYER_FADE_STEPS;
-
-    if (steps < 2 || pattern.duration_ms < 600) {
-        execute_simple_blink(pattern);
-        return;
-    }
-
-    uint16_t fade_total_ms = pattern.duration_ms / 3;
-    uint16_t fade_step_ms = fade_total_ms / steps;
-    uint16_t hold_ms = pattern.duration_ms - (fade_step_ms * steps * 2);
-
-    if (fade_step_ms < 10) {
-        fade_step_ms = 10;
-    }
-
-    for (int repeat = 0; repeat < pattern.repeat_count; repeat++) {
-        if (!indication_allowed()) {
-            turn_leds_off();
-            return;
-        }
-
-        for (uint8_t step = 1; step <= steps; step++) {
-            set_leds_color(scale_rgb(pattern.color, step, steps));
-            k_sleep(K_MSEC(fade_step_ms));
-        }
-
-        if (hold_ms > 0) {
-            set_leds_color(pattern.color);
-            k_sleep(K_MSEC(hold_ms));
-        }
-
-        for (int step = steps; step >= 0; step--) {
-            set_leds_color(scale_rgb(pattern.color, step, steps));
-            k_sleep(K_MSEC(fade_step_ms));
-        }
-
-        turn_leds_off();
-
-        if (pattern.pause_ms > 0 && repeat < pattern.repeat_count - 1) {
-            k_sleep(K_MSEC(pattern.pause_ms));
-        }
-    }
-}
-
-static void execute_blink_pattern(struct blink_pattern pattern) {
-    if (!indication_allowed()) {
-        return;
-    }
-
-    bool should_restore_rgb = pause_rgb_underglow_for_blink();
-    bool ext_power_was_off = prepare_ext_power_for_blink();
-
-    if (pattern.smooth) {
-        execute_smooth_blink(pattern);
-    } else {
-        execute_simple_blink(pattern);
-    }
-
-    turn_leds_off();
-
-    if (should_restore_rgb) {
-        restore_rgb_underglow_after_blink(true);
-    } else {
-        restore_ext_power_after_blink(ext_power_was_off);
-    }
-}
-
-static bool watched_layer(uint8_t layer) {
-    return layer == CONFIG_WS2812_WIDGET_LAYER_TRIGGER_0 ||
-           layer == CONFIG_WS2812_WIDGET_LAYER_TRIGGER_1 ||
-           layer == CONFIG_WS2812_WIDGET_LAYER_TRIGGER_2;
+    enqueue_indicator(request);
+#endif
 }
 
 void ws2812_indicate_layer(void) {
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE)
-    ws2812_note_activity();
-    queue_layer_blink(hex_to_rgb(CONFIG_WS2812_WIDGET_LAYER_COLOR_MANUAL));
+    uint8_t layer = zmk_keymap_highest_layer_active();
+    if (layer == zmk_keymap_layer_default()) {
+        return;
+    }
+
+    enqueue_layer_indicator(true);
 #endif
 }
 
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE)
-#if !IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+static bool layer_allowed(uint8_t layer) {
+    if (layer == zmk_keymap_layer_default()) {
+        return false;
+    }
 
-static int led_layer_listener_cb(const zmk_event_t *eh) {
-    const struct zmk_layer_state_changed *ev = as_zmk_layer_state_changed(eh);
+    if (layer >= 32) {
+        return true;
+    }
 
-    if (ev == NULL || !initialized) {
+    return (CONFIG_WS2812_WIDGET_LAYER_INDICATOR_MASK & BIT(layer)) != 0;
+}
+
+static struct k_work_delayable layer_indicator_work;
+static bool pending_layer_state;
+static bool pending_layer_valid;
+
+static void layer_indicator_work_cb(struct k_work *work) {
+    if (!pending_layer_valid) {
+        return;
+    }
+
+    bool state = pending_layer_state;
+    pending_layer_valid = false;
+    enqueue_layer_indicator(state);
+}
+
+static int layer_listener_cb(const zmk_event_t *eh) {
+    const struct zmk_layer_state_changed *layer_ev = as_zmk_layer_state_changed(eh);
+
+    if (!initialized || layer_ev == NULL || !layer_allowed(layer_ev->layer)) {
         return 0;
     }
 
-    ws2812_note_activity();
-
-    if (!indication_allowed()) {
-        return 0;
-    }
-
-    if (!watched_layer(ev->layer)) {
-        return 0;
-    }
-
-    k_sleep(K_MSEC(CONFIG_WS2812_WIDGET_LAYER_DEBOUNCE_MS));
-
-    struct led_rgb color = ev->state ? hex_to_rgb(CONFIG_WS2812_WIDGET_LAYER_COLOR_ON)
-                                     : hex_to_rgb(CONFIG_WS2812_WIDGET_LAYER_COLOR_OFF);
-
-    queue_layer_blink(color);
-
-    LOG_INF("WS2812 layer blink: layer=%d state=%d", ev->layer, ev->state);
+    pending_layer_state = layer_ev->state;
+    pending_layer_valid = true;
+    k_work_reschedule(&layer_indicator_work, K_MSEC(CONFIG_WS2812_WIDGET_LAYER_DEBOUNCE_MS));
 
     return 0;
 }
 
-ZMK_LISTENER(led_layer_listener, led_layer_listener_cb);
-ZMK_SUBSCRIPTION(led_layer_listener, zmk_layer_state_changed);
-
-#endif
+ZMK_LISTENER(ws2812_layer_listener, layer_listener_cb);
+ZMK_SUBSCRIPTION(ws2812_layer_listener, zmk_layer_state_changed);
 #endif
 
 #if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING) && IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY)
+static int battery_listener_cb(const zmk_event_t *eh) {
+    const struct zmk_battery_state_changed *battery_ev = as_zmk_battery_state_changed(eh);
 
-static struct k_work_delayable battery_periodic_work;
-
-static uint8_t read_battery_level_with_retry(void) {
-    uint8_t battery_level = zmk_battery_state_of_charge();
-
-    for (int retry = 0; battery_level == 0 && retry < 10; retry++) {
-        k_sleep(K_MSEC(100));
-        battery_level = zmk_battery_state_of_charge();
+    if (!initialized || battery_ev == NULL) {
+        return 0;
     }
 
-    return battery_level;
+    if (battery_ev->state_of_charge > 0 &&
+        battery_ev->state_of_charge <= CONFIG_WS2812_WIDGET_BATTERY_LEVEL_CRITICAL) {
+        struct indicator_request request = {
+            .color = hex_to_rgb(CONFIG_WS2812_WIDGET_BATTERY_COLOR_CRITICAL),
+            .fade_in_ms = CONFIG_WS2812_WIDGET_PRE_FADE_MS,
+            .hold_ms = CONFIG_WS2812_WIDGET_BATTERY_HOLD_MS,
+            .fade_out_ms = CONFIG_WS2812_WIDGET_POST_FADE_MS,
+            .gap_ms = CONFIG_WS2812_WIDGET_INTERVAL_MS,
+            .repeat_count = CONFIG_WS2812_WIDGET_BATTERY_CRITICAL_REPEAT_COUNT,
+        };
+
+        enqueue_indicator(request);
+    }
+
+    return 0;
 }
 
-static void ws2812_warn_if_battery_below_threshold(void) {
-    if (!indication_allowed()) {
-        return;
-    }
-
-    if (k_uptime_get() < battery_quiet_until_ms) {
-        return;
-    }
-
-    uint8_t battery_level = read_battery_level_with_retry();
-
-    if (battery_level == 0) {
-        LOG_WRN("WS2812 battery warning skipped: battery level unavailable");
-        return;
-    }
-
-    if (battery_level <= CONFIG_WS2812_WIDGET_BATTERY_LEVEL_CRITICAL) {
-        queue_blink(hex_to_rgb(CONFIG_WS2812_WIDGET_BATTERY_COLOR_CRITICAL),
-                    CONFIG_WS2812_WIDGET_BATTERY_BLINK_MS,
-                    CONFIG_WS2812_WIDGET_BATTERY_BLINK_PAUSE_MS,
-                    CONFIG_WS2812_WIDGET_BATTERY_BLINK_REPEAT,
-                    false);
-
-        LOG_INF("WS2812 battery warning: level=%d threshold=%d",
-                battery_level,
-                CONFIG_WS2812_WIDGET_BATTERY_LEVEL_CRITICAL);
-    }
-}
-
-void ws2812_indicate_battery(void) {
-    ws2812_note_activity();
-    ws2812_warn_if_battery_below_threshold();
-}
-
-static void battery_periodic_cb(struct k_work *work) {
-    ARG_UNUSED(work);
-
-    if (initialized) {
-        ws2812_warn_if_battery_below_threshold();
-    }
-
-    k_work_reschedule(&battery_periodic_work,
-                      K_MSEC(CONFIG_WS2812_WIDGET_BATTERY_PERIODIC_MS));
-}
-
-#else
-
-void ws2812_indicate_battery(void) {
-}
-
+ZMK_LISTENER(ws2812_battery_listener, battery_listener_cb);
+ZMK_SUBSCRIPTION(ws2812_battery_listener, zmk_battery_state_changed);
 #endif
 
-void ws2812_indicate_connectivity(void) {
-}
+static int activity_listener_cb(const zmk_event_t *eh) {
+    const struct zmk_activity_state_changed *activity_ev = as_zmk_activity_state_changed(eh);
 
-static int ws2812_position_listener_cb(const zmk_event_t *eh) {
-    const struct zmk_position_state_changed *ev = as_zmk_position_state_changed(eh);
+    if (activity_ev == NULL) {
+        return 0;
+    }
 
-    if (ev != NULL && ev->state) {
-        ws2812_note_activity();
+    activity_active = activity_ev->state == ZMK_ACTIVITY_ACTIVE;
+
+    if (!activity_active) {
+        set_all_pixels((struct led_rgb){.r = 0, .g = 0, .b = 0});
     }
 
     return 0;
 }
 
-ZMK_LISTENER(ws2812_position_listener, ws2812_position_listener_cb);
-ZMK_SUBSCRIPTION(ws2812_position_listener, zmk_position_state_changed);
+ZMK_LISTENER(ws2812_activity_listener, activity_listener_cb);
+ZMK_SUBSCRIPTION(ws2812_activity_listener, zmk_activity_state_changed);
 
-static int ws2812_sensor_listener_cb(const zmk_event_t *eh) {
-    const struct zmk_sensor_event *ev = as_zmk_sensor_event(eh);
+#if IS_ENABLED(CONFIG_WS2812_WIDGET_BATTERY_REMINDER)
+static struct k_work_delayable battery_reminder_work;
 
-    if (ev != NULL) {
-        ws2812_note_activity();
+static void battery_reminder_work_cb(struct k_work *work) {
+    if (initialized && activity_active) {
+        ws2812_indicate_battery();
     }
 
-    return 0;
+    k_work_reschedule(&battery_reminder_work,
+                      K_MSEC(CONFIG_WS2812_WIDGET_BATTERY_REMINDER_INTERVAL_MS));
 }
+#endif
 
-ZMK_LISTENER(ws2812_sensor_listener, ws2812_sensor_listener_cb);
-ZMK_SUBSCRIPTION(ws2812_sensor_listener, zmk_sensor_event);
-
-static void led_process_thread(void *d0, void *d1, void *d2) {
+extern void ws2812_indicator_process_thread(void *d0, void *d1, void *d2) {
     ARG_UNUSED(d0);
     ARG_UNUSED(d1);
     ARG_UNUSED(d2);
 
+#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE)
+    k_work_init_delayable(&layer_indicator_work, layer_indicator_work_cb);
+#endif
+
+#if IS_ENABLED(CONFIG_WS2812_WIDGET_BATTERY_REMINDER)
+    k_work_init_delayable(&battery_reminder_work, battery_reminder_work_cb);
+#endif
+
     while (true) {
-        struct blink_pattern pattern;
-
-        k_msgq_get(&led_msgq, &pattern, K_FOREVER);
-        execute_blink_pattern(pattern);
-
-        k_sleep(K_MSEC(CONFIG_WS2812_WIDGET_INTERVAL_MS));
+        struct indicator_request request;
+        k_msgq_get(&indicator_msgq, &request, K_FOREVER);
+        execute_indicator_request(&request);
     }
 }
 
-K_THREAD_DEFINE(led_process_tid, 1024, led_process_thread, NULL, NULL, NULL,
-                K_LOWEST_APPLICATION_THREAD_PRIO, 0, 100);
+K_THREAD_DEFINE(ws2812_indicator_process_tid, 1536, ws2812_indicator_process_thread, NULL, NULL,
+                NULL, K_LOWEST_APPLICATION_THREAD_PRIO, 0, 100);
 
-static void led_init_thread(void *d0, void *d1, void *d2) {
+extern void ws2812_indicator_init_thread(void *d0, void *d1, void *d2) {
     ARG_UNUSED(d0);
     ARG_UNUSED(d1);
     ARG_UNUSED(d2);
@@ -583,21 +448,28 @@ static void led_init_thread(void *d0, void *d1, void *d2) {
         return;
     }
 
-    ws2812_note_activity();
-
-    turn_leds_off();
-
     initialized = true;
+    LOG_INF("WS2812 overlay indicator initialized with %d pixels", WS2812_NUM_PIXELS);
 
-#if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING) && IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY)
-    k_work_init_delayable(&battery_periodic_work, battery_periodic_cb);
-
-    k_work_reschedule(&battery_periodic_work,
-                      K_MSEC(CONFIG_WS2812_WIDGET_BATTERY_PERIODIC_MS));
+#if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING) && IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY) &&   \
+    IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY_ON_START)
+    uint8_t battery_level = zmk_battery_state_of_charge();
+    struct indicator_request request = {
+        .color = get_battery_color(battery_level),
+        .fade_in_ms = CONFIG_WS2812_WIDGET_PRE_FADE_MS,
+        .hold_ms = CONFIG_WS2812_WIDGET_BATTERY_HOLD_MS,
+        .fade_out_ms = CONFIG_WS2812_WIDGET_POST_FADE_MS,
+        .gap_ms = CONFIG_WS2812_WIDGET_INTERVAL_MS,
+        .repeat_count = CONFIG_WS2812_WIDGET_BATTERY_REMINDER_REPEAT_COUNT,
+    };
+    enqueue_indicator(request);
 #endif
 
-    LOG_INF("WS2812 blink/fade widget initialized with %d pixels", NUM_PIXELS);
+#if IS_ENABLED(CONFIG_WS2812_WIDGET_BATTERY_REMINDER)
+    k_work_reschedule(&battery_reminder_work,
+                      K_MSEC(CONFIG_WS2812_WIDGET_BATTERY_REMINDER_INTERVAL_MS));
+#endif
 }
 
-K_THREAD_DEFINE(led_init_tid, 1024, led_init_thread, NULL, NULL, NULL,
+K_THREAD_DEFINE(ws2812_indicator_init_tid, 1024, ws2812_indicator_init_thread, NULL, NULL, NULL,
                 K_LOWEST_APPLICATION_THREAD_PRIO, 0, 200);
