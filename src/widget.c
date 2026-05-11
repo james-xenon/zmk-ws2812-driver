@@ -5,7 +5,8 @@
  * - does not patch ZMK core;
  * - does not implement persistent layer colors;
  * - uses temporary overlay indications;
- * - guards layer-state subscription so peripheral split builds link correctly.
+ * - guards layer-state subscription so peripheral split builds link correctly;
+ * - temporarily enables external power so indicators are visible even when RGB is OFF.
  */
 
 #include <string.h>
@@ -27,6 +28,10 @@
 
 #if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW)
 #include <zmk/rgb_underglow.h>
+#endif
+
+#if IS_ENABLED(CONFIG_ZMK_EXT_POWER)
+#include <zmk/ext_power.h>
 #endif
 
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE) &&                                      \
@@ -219,8 +224,36 @@ static void restore_underglow_if_needed(bool was_on) {
     set_all_pixels((struct led_rgb){0, 0, 0});
 }
 
+static bool enable_ext_power_if_needed(void) {
+    bool ext_power_was_on = true;
+
+#if IS_ENABLED(CONFIG_WS2812_WIDGET_USE_EXT_POWER) && IS_ENABLED(CONFIG_ZMK_EXT_POWER)
+    int rc = zmk_ext_power_get(&ext_power_was_on);
+
+    if (rc == 0 && !ext_power_was_on) {
+        zmk_ext_power_enable();
+        k_sleep(K_MSEC(CONFIG_WS2812_WIDGET_EXT_POWER_STARTUP_DELAY_MS));
+    }
+#endif
+
+    return ext_power_was_on;
+}
+
+static void restore_ext_power_if_needed(bool ext_power_was_on, bool underglow_was_on) {
+#if IS_ENABLED(CONFIG_WS2812_WIDGET_USE_EXT_POWER) && IS_ENABLED(CONFIG_ZMK_EXT_POWER)
+    if (!ext_power_was_on && !underglow_was_on &&
+        IS_ENABLED(CONFIG_WS2812_WIDGET_RESTORE_EXT_POWER_OFF)) {
+        zmk_ext_power_disable();
+    }
+#else
+    ARG_UNUSED(ext_power_was_on);
+    ARG_UNUSED(underglow_was_on);
+#endif
+}
+
 static void execute_indicator_request(const struct indicator_request *request) {
     bool underglow_was_on = pause_underglow_if_needed();
+    bool ext_power_was_on = enable_ext_power_if_needed();
 
     for (uint8_t i = 0; i < request->repeat_count; i++) {
         fade_from_black_to_color(request->color, request->fade_in_ms);
@@ -239,6 +272,7 @@ static void execute_indicator_request(const struct indicator_request *request) {
     }
 
     restore_underglow_if_needed(underglow_was_on);
+    restore_ext_power_if_needed(ext_power_was_on, underglow_was_on);
 }
 
 static void enqueue_indicator(struct indicator_request request, bool periodic) {
@@ -432,7 +466,13 @@ static void battery_reminder_work_cb(struct k_work *work) {
     if (indication_allowed(true)) {
         uint8_t battery_level = zmk_battery_state_of_charge();
 
-        if (battery_level > 0 && battery_level <= CONFIG_WS2812_WIDGET_BATTERY_LEVEL_CRITICAL) {
+        bool should_show = battery_level > 0;
+
+#if IS_ENABLED(CONFIG_WS2812_WIDGET_BATTERY_REMINDER_ONLY_CRITICAL)
+        should_show = should_show && battery_level <= CONFIG_WS2812_WIDGET_BATTERY_LEVEL_CRITICAL;
+#endif
+
+        if (should_show) {
             enqueue_indicator(make_battery_request(hex_to_rgb(CONFIG_WS2812_WIDGET_BATTERY_REMINDER_COLOR),
                                                    CONFIG_WS2812_WIDGET_BATTERY_REMINDER_REPEAT_COUNT,
                                                    INDICATOR_KIND_BATTERY_CRITICAL),
