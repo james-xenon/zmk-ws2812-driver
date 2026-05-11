@@ -31,7 +31,7 @@
 #endif
 
 #if IS_ENABLED(CONFIG_ZMK_EXT_POWER)
-#include <zmk/ext_power.h>
+#include <drivers/ext_power.h>
 #endif
 
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE) &&                                      \
@@ -224,14 +224,27 @@ static void restore_underglow_if_needed(bool was_on) {
     set_all_pixels((struct led_rgb){0, 0, 0});
 }
 
+#if IS_ENABLED(CONFIG_ZMK_EXT_POWER)
+static const struct device *get_ext_power_device(void) {
+    return device_get_binding("EXT_POWER");
+}
+#endif
+
 static bool enable_ext_power_if_needed(void) {
     bool ext_power_was_on = true;
 
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_USE_EXT_POWER) && IS_ENABLED(CONFIG_ZMK_EXT_POWER)
-    int rc = zmk_ext_power_get(&ext_power_was_on);
+    const struct device *ext_power = get_ext_power_device();
 
-    if (rc == 0 && !ext_power_was_on) {
-        zmk_ext_power_enable();
+    if (ext_power == NULL) {
+        LOG_WRN("EXT_POWER device not found");
+        return true;
+    }
+
+    ext_power_was_on = ext_power_get(ext_power) > 0;
+
+    if (!ext_power_was_on) {
+        ext_power_enable(ext_power);
         k_sleep(K_MSEC(CONFIG_WS2812_WIDGET_EXT_POWER_STARTUP_DELAY_MS));
     }
 #endif
@@ -241,9 +254,15 @@ static bool enable_ext_power_if_needed(void) {
 
 static void restore_ext_power_if_needed(bool ext_power_was_on, bool underglow_was_on) {
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_USE_EXT_POWER) && IS_ENABLED(CONFIG_ZMK_EXT_POWER)
+    const struct device *ext_power = get_ext_power_device();
+
+    if (ext_power == NULL) {
+        return;
+    }
+
     if (!ext_power_was_on && !underglow_was_on &&
         IS_ENABLED(CONFIG_WS2812_WIDGET_RESTORE_EXT_POWER_OFF)) {
-        zmk_ext_power_disable();
+        ext_power_disable(ext_power);
     }
 #else
     ARG_UNUSED(ext_power_was_on);
