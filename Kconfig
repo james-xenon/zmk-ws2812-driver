@@ -1,9 +1,10 @@
-config WS2812_WIDGET
-    bool "Enable WS2812 LED widget for status indication"
+menuconfig WS2812_WIDGET
+    bool "Enable WS2812 LED widget for keyboard status overlays"
     depends on LED_STRIP
     select LED_STRIP_WS2812
     help
-      Enable WS2812 RGB LED widget for temporary keyboard status indication.
+      Enables a WS2812 overlay indicator for battery reminders and layer changes.
+      This implementation does not leave persistent layer colors on the strip.
 
 if WS2812_WIDGET
 
@@ -12,143 +13,104 @@ config WS2812_WIDGET_ENABLED_ON_START
     default y
 
 config WS2812_WIDGET_INTERVAL_MS
-    int "Generic interval between indication operations in milliseconds"
+    int "Generic interval between indication pulses in milliseconds"
     default 200
+    range 0 5000
 
-config WS2812_WIDGET_SHOW_BATTERY
-    bool "Enable battery indication"
-    depends on ZMK_BATTERY_REPORTING
+config WS2812_WIDGET_FADE_STEP_MS
+    int "Fade step time in milliseconds"
+    default 30
+    range 5 100
+
+config WS2812_WIDGET_PRE_FADE_MS
+    int "Fade current lighting down before an indicator"
+    default 600
+    range 0 3000
+
+config WS2812_WIDGET_POST_FADE_MS
+    int "Fade indicator out before restoring lighting"
+    default 600
+    range 0 3000
+
+config WS2812_WIDGET_AUTO_DISABLE_AFTER_INACTIVITY
+    bool "Disable periodic indications after inactivity"
+    default n
+
+config WS2812_WIDGET_INACTIVITY_DISABLE_MS
+    int "Inactivity time before periodic indications are disabled"
+    default 1200000
+    depends on WS2812_WIDGET_AUTO_DISABLE_AFTER_INACTIVITY
+
+config WS2812_WIDGET_PAUSE_RGB_UNDERGLOW
+    bool "Temporarily pause ZMK RGB underglow while showing indicators"
+    depends on ZMK_RGB_UNDERGLOW
     default y
+    help
+      Driver-only workaround. Uses public zmk_rgb_underglow_get_state/off/on()
+      instead of patching ZMK core.
 
-config WS2812_WIDGET_SHOW_BATTERY_ON_START
-    bool "Show battery indication on startup"
-    depends on WS2812_WIDGET_SHOW_BATTERY
-    default n
+config WS2812_WIDGET_UNDERGLOW_OFF_DELAY_MS
+    int "Delay after turning off RGB underglow before widget indication"
+    default 120
+    depends on WS2812_WIDGET_PAUSE_RGB_UNDERGLOW
 
-config WS2812_WIDGET_BATTERY_LEVEL_HIGH
-    int "High battery level percentage"
+config WS2812_WIDGET_UNDERGLOW_RESTORE_DELAY_MS
+    int "Delay before restoring RGB underglow after widget indication"
     default 80
-    depends on WS2812_WIDGET_SHOW_BATTERY
+    depends on WS2812_WIDGET_PAUSE_RGB_UNDERGLOW
 
-config WS2812_WIDGET_BATTERY_LEVEL_LOW
-    int "Low battery level percentage"
-    default 20
-    depends on WS2812_WIDGET_SHOW_BATTERY
+# Compatibility option. Do not enable without a patched ZMK core.
+config WS2812_WIDGET_USE_RGB_UNDERGLOW_OVERLAY_API
+    bool "Compatibility option: use patched RGB underglow overlay API"
+    depends on ZMK_RGB_UNDERGLOW
+    default n
+    help
+      Kept only so old configs do not fail. This driver-only version does not use
+      zmk_rgb_underglow_overlay_suspend()/resume().
 
-config WS2812_WIDGET_BATTERY_LEVEL_CRITICAL
-    int "Critical battery level percentage"
-    default 20
-    depends on WS2812_WIDGET_SHOW_BATTERY
-
-config WS2812_WIDGET_BATTERY_COLOR_HIGH
-    hex "High battery level color"
-    default 0x00FF00
-    depends on WS2812_WIDGET_SHOW_BATTERY
-
-config WS2812_WIDGET_BATTERY_COLOR_MEDIUM
-    hex "Medium battery level color"
-    default 0xFFFF00
-    depends on WS2812_WIDGET_SHOW_BATTERY
-
-config WS2812_WIDGET_BATTERY_COLOR_LOW
-    hex "Low battery level color"
-    default 0xFF8000
-    depends on WS2812_WIDGET_SHOW_BATTERY
-
-config WS2812_WIDGET_BATTERY_COLOR_CRITICAL
-    hex "Critical battery level color"
-    default 0xFF0000
-    depends on WS2812_WIDGET_SHOW_BATTERY
-
-config WS2812_WIDGET_BATTERY_PERIODIC_MS
-    int "Battery reminder period in milliseconds"
-    default 180000
-    depends on WS2812_WIDGET_SHOW_BATTERY
-
-config WS2812_WIDGET_BATTERY_BLINK_REPEAT
-    int "Battery reminder blink repeat count"
-    default 3
-    depends on WS2812_WIDGET_SHOW_BATTERY
-
-config WS2812_WIDGET_BATTERY_FADE_IN_MS
-    int "Battery indication fade-in time in milliseconds"
-    default 350
-    depends on WS2812_WIDGET_SHOW_BATTERY
-
-config WS2812_WIDGET_BATTERY_HOLD_MS
-    int "Battery indication hold time in milliseconds"
-    default 180
-    depends on WS2812_WIDGET_SHOW_BATTERY
-
-config WS2812_WIDGET_BATTERY_FADE_OUT_MS
-    int "Battery indication fade-out time in milliseconds"
-    default 350
-    depends on WS2812_WIDGET_SHOW_BATTERY
-
-config WS2812_WIDGET_BATTERY_BLINK_PAUSE_MS
-    int "Pause between battery blinks in milliseconds"
-    default 1000
-    depends on WS2812_WIDGET_SHOW_BATTERY
-
-config WS2812_WIDGET_BATTERY_COOLDOWN_AFTER_LAYER_MS
-    int "Delay battery reminder after layer indication in milliseconds"
-    default 15000
-    depends on WS2812_WIDGET_SHOW_BATTERY
-
-config WS2812_WIDGET_BATTERY_BLINK_MS
-    int "Legacy battery blink duration in milliseconds"
-    default 200
-    depends on WS2812_WIDGET_SHOW_BATTERY
-
-config WS2812_WIDGET_SHOW_CONNECTIVITY
-    bool "Enable connectivity indication"
+config WS2812_WIDGET_USE_EXT_POWER
+    bool "Compatibility option for external power handling"
     default n
 
-config WS2812_WIDGET_CONN_SHOW_USB
-    bool "Show USB connection indication"
+config WS2812_WIDGET_EXT_POWER_STARTUP_DELAY_MS
+    int "Compatibility startup delay for external power"
+    default 100
+    depends on WS2812_WIDGET_USE_EXT_POWER
+
+config WS2812_WIDGET_RESTORE_EXT_POWER_OFF
+    bool "Compatibility option to restore external power off"
     default n
-    depends on WS2812_WIDGET_SHOW_CONNECTIVITY
+    depends on WS2812_WIDGET_USE_EXT_POWER
 
-config WS2812_WIDGET_CONN_BLINK_MS
-    int "Connectivity blink duration in milliseconds"
-    default 150
-    depends on WS2812_WIDGET_SHOW_CONNECTIVITY
-
-config WS2812_WIDGET_CONN_COLOR_USB
-    hex "USB connected color"
-    default 0x00FF00
-    depends on WS2812_WIDGET_SHOW_CONNECTIVITY
-
-config WS2812_WIDGET_CONN_COLOR_CONNECTED
-    hex "BLE connected color"
-    default 0x0000FF
-    depends on WS2812_WIDGET_SHOW_CONNECTIVITY
-
-config WS2812_WIDGET_CONN_COLOR_ADVERTISING
-    hex "BLE advertising color"
-    default 0x00FFFF
-    depends on WS2812_WIDGET_SHOW_CONNECTIVITY
-
-config WS2812_WIDGET_CONN_COLOR_DISCONNECTED
-    hex "BLE disconnected color"
-    default 0xFF0000
-    depends on WS2812_WIDGET_SHOW_CONNECTIVITY
+# ---------------------------------------------------------------------
+# Layer indication
+# ---------------------------------------------------------------------
 
 config WS2812_WIDGET_SHOW_LAYER_CHANGE
-    bool "Enable temporary permanent-layer indication"
+    bool "Show temporary layer on/off indicators"
     default y
 
 config WS2812_WIDGET_SHOW_LAYER_COLORS
     bool "Legacy persistent layer colors"
     default n
+    depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
     help
       Kept only for compatibility. This patched driver does not use persistent
       layer colors, because persistent colors conflict with normal underglow.
 
 config WS2812_WIDGET_LAYER_DEBOUNCE_MS
-    int "Debounce layer change notifications in milliseconds"
+    int "Layer change debounce in milliseconds"
     default 30
+    range 0 1000
     depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
+
+config WS2812_WIDGET_LAYER_INDICATOR_MASK
+    hex "Layer mask for layer indicators"
+    default 0xFFFFFFFE
+    depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
+    help
+      Bit mask of layers that should trigger the indicator.
+      Default 0xFFFFFFFE means all layers except layer 0.
 
 config WS2812_WIDGET_LAYER_TRIGGER_0
     int "Layer number that should trigger indication 0"
@@ -171,62 +133,76 @@ config WS2812_WIDGET_LAYER_TRIGGER_3
     depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
 
 config WS2812_WIDGET_LAYER_COLOR_ON
-    hex "Layer enabled indication color"
+    hex "Layer enabled indicator color"
     default 0xFFFFFF
     depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
 
 config WS2812_WIDGET_LAYER_COLOR_OFF
-    hex "Layer disabled indication color"
+    hex "Layer disabled indicator color"
     default 0xFF0000
     depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
 
 config WS2812_WIDGET_LAYER_COLOR_MANUAL
-    hex "Manual layer indication color"
+    hex "Manual layer indicator color"
     default 0xFFFFFF
     depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
 
 config WS2812_WIDGET_LAYER_FADE_ENABLE
-    bool "Fade layer indication"
+    bool "Fade layer indications"
     default y
     depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
 
 config WS2812_WIDGET_LAYER_FADE_STEPS
-    int "Number of fade steps for layer indication"
+    int "Compatibility fade step count for layer indication"
     default 20
+    range 1 100
     depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
 
 config WS2812_WIDGET_LAYER_FADE_IN_MS
     int "Layer indication fade-in time in milliseconds"
     default 600
+    range 0 3000
     depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
 
 config WS2812_WIDGET_LAYER_HOLD_MS
-    int "Layer indication hold time in milliseconds"
+    int "Layer indicator full-bright hold time in milliseconds"
     default 1000
+    range 100 5000
     depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
 
 config WS2812_WIDGET_LAYER_FADE_OUT_MS
     int "Layer indication fade-out time in milliseconds"
     default 600
+    range 0 3000
+    depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
+
+config WS2812_WIDGET_LAYER_REPEAT_COUNT
+    int "Layer indicator pulse count"
+    default 1
+    range 1 10
     depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
 
 config WS2812_WIDGET_LAYER_BLINK_REPEAT
-    int "Layer indication blink repeat count"
+    int "Compatibility layer blink repeat count"
     default 1
+    range 1 10
     depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
 
 config WS2812_WIDGET_LAYER_BLINK_PAUSE_MS
     int "Pause between layer blinks in milliseconds"
     default 1000
+    range 0 5000
     depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
 
 config WS2812_WIDGET_LAYER_BLINK_MS
     int "Legacy layer blink duration in milliseconds"
     default 100
     depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
+    help
+      Kept for compatibility with old configs.
 
 config WS2812_WIDGET_LAYER_COLOR
-    hex "Legacy layer change indication color"
+    hex "Legacy layer change color"
     default 0xFFFFFF
     depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
 
@@ -265,6 +241,173 @@ config WS2812_WIDGET_LAYER_6_COLOR
     default 0x00FFFF
     depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
 
+# ---------------------------------------------------------------------
+# Battery indication
+# ---------------------------------------------------------------------
+
+config WS2812_WIDGET_SHOW_BATTERY
+    bool "Show battery indicators"
+    depends on ZMK_BATTERY_REPORTING
+    default y
+
+config WS2812_WIDGET_SHOW_BATTERY_ON_START
+    bool "Show battery indicator on startup"
+    depends on WS2812_WIDGET_SHOW_BATTERY
+    default n
+
+config WS2812_WIDGET_BATTERY_LEVEL_HIGH
+    int "High battery level percentage"
+    default 80
+    depends on WS2812_WIDGET_SHOW_BATTERY
+
+config WS2812_WIDGET_BATTERY_LEVEL_LOW
+    int "Low battery level percentage"
+    default 20
+    depends on WS2812_WIDGET_SHOW_BATTERY
+
+config WS2812_WIDGET_BATTERY_LEVEL_CRITICAL
+    int "Critical battery level percentage"
+    default 20
+    depends on WS2812_WIDGET_SHOW_BATTERY
+
+config WS2812_WIDGET_BATTERY_COLOR_HIGH
+    hex "High battery level color"
+    default 0x00FF00
+    depends on WS2812_WIDGET_SHOW_BATTERY
+
+config WS2812_WIDGET_BATTERY_COLOR_MEDIUM
+    hex "Medium battery level color"
+    default 0xFFFF00
+    depends on WS2812_WIDGET_SHOW_BATTERY
+
+config WS2812_WIDGET_BATTERY_COLOR_LOW
+    hex "Low battery level color"
+    default 0xFF8000
+    depends on WS2812_WIDGET_SHOW_BATTERY
+
+config WS2812_WIDGET_BATTERY_COLOR_CRITICAL
+    hex "Critical battery level color"
+    default 0xFF0000
+    depends on WS2812_WIDGET_SHOW_BATTERY
+
+config WS2812_WIDGET_BATTERY_REMINDER
+    bool "Show periodic red battery reminder when battery is critical"
+    depends on WS2812_WIDGET_SHOW_BATTERY
+    default y
+
+config WS2812_WIDGET_BATTERY_REMINDER_INTERVAL_MS
+    int "Battery reminder interval in milliseconds"
+    depends on WS2812_WIDGET_BATTERY_REMINDER
+    default 180000
+    range 10000 3600000
+
+config WS2812_WIDGET_BATTERY_PERIODIC_MS
+    int "Compatibility battery reminder period in milliseconds"
+    depends on WS2812_WIDGET_BATTERY_REMINDER
+    default 180000
+    range 10000 3600000
+
+config WS2812_WIDGET_BATTERY_REMINDER_COLOR
+    hex "Battery reminder color"
+    depends on WS2812_WIDGET_BATTERY_REMINDER
+    default 0xFF0000
+
+config WS2812_WIDGET_BATTERY_REMINDER_REPEAT_COUNT
+    int "Battery reminder pulse count"
+    depends on WS2812_WIDGET_BATTERY_REMINDER
+    default 3
+    range 1 10
+
+config WS2812_WIDGET_BATTERY_BLINK_REPEAT
+    int "Compatibility battery reminder pulse count"
+    depends on WS2812_WIDGET_SHOW_BATTERY
+    default 3
+    range 1 10
+
+config WS2812_WIDGET_BATTERY_FADE_IN_MS
+    int "Battery indication fade-in time in milliseconds"
+    depends on WS2812_WIDGET_SHOW_BATTERY
+    default 350
+    range 0 3000
+
+config WS2812_WIDGET_BATTERY_HOLD_MS
+    int "Battery reminder full-bright hold time in milliseconds"
+    depends on WS2812_WIDGET_SHOW_BATTERY
+    default 700
+    range 100 5000
+
+config WS2812_WIDGET_BATTERY_FADE_OUT_MS
+    int "Battery indication fade-out time in milliseconds"
+    depends on WS2812_WIDGET_SHOW_BATTERY
+    default 350
+    range 0 3000
+
+config WS2812_WIDGET_BATTERY_BLINK_PAUSE_MS
+    int "Pause between battery blinks in milliseconds"
+    depends on WS2812_WIDGET_SHOW_BATTERY
+    default 1000
+    range 0 5000
+
+config WS2812_WIDGET_BATTERY_COOLDOWN_AFTER_LAYER_MS
+    int "Delay battery reminder after layer indication in milliseconds"
+    depends on WS2812_WIDGET_SHOW_BATTERY
+    default 15000
+
+config WS2812_WIDGET_BATTERY_BLINK_MS
+    int "Legacy battery blink duration in milliseconds"
+    depends on WS2812_WIDGET_SHOW_BATTERY
+    default 200
+    help
+      Kept for compatibility with old configs.
+
+config WS2812_WIDGET_BATTERY_CRITICAL_REPEAT_COUNT
+    int "Critical battery event pulse count"
+    depends on WS2812_WIDGET_SHOW_BATTERY
+    default 3
+    range 1 10
+
+# ---------------------------------------------------------------------
+# Connectivity indication
+# ---------------------------------------------------------------------
+
+config WS2812_WIDGET_SHOW_CONNECTIVITY
+    bool "Show connectivity indicators"
+    default n
+
+config WS2812_WIDGET_CONN_SHOW_USB
+    bool "Show USB connection indication"
+    default n
+    depends on WS2812_WIDGET_SHOW_CONNECTIVITY
+
+config WS2812_WIDGET_CONN_BLINK_MS
+    int "Connectivity blink duration in milliseconds"
+    default 150
+    depends on WS2812_WIDGET_SHOW_CONNECTIVITY
+
+config WS2812_WIDGET_CONN_COLOR_USB
+    hex "USB connected color"
+    default 0x00FF00
+    depends on WS2812_WIDGET_SHOW_CONNECTIVITY
+
+config WS2812_WIDGET_CONN_COLOR_CONNECTED
+    hex "BLE connected color"
+    default 0x0000FF
+    depends on WS2812_WIDGET_SHOW_CONNECTIVITY
+
+config WS2812_WIDGET_CONN_COLOR_ADVERTISING
+    hex "BLE advertising color"
+    default 0x00FFFF
+    depends on WS2812_WIDGET_SHOW_CONNECTIVITY
+
+config WS2812_WIDGET_CONN_COLOR_DISCONNECTED
+    hex "BLE disconnected color"
+    default 0xFF0000
+    depends on WS2812_WIDGET_SHOW_CONNECTIVITY
+
+# ---------------------------------------------------------------------
+# Color constants
+# ---------------------------------------------------------------------
+
 config WS2812_WIDGET_COLOR_RED
     hex "Red color value"
     default 0xFF0000
@@ -296,48 +439,5 @@ config WS2812_WIDGET_COLOR_WHITE
 config WS2812_WIDGET_COLOR_OFF
     hex "Off/black color value"
     default 0x000000
-
-config WS2812_WIDGET_PAUSE_RGB_UNDERGLOW
-    bool "Temporarily turn off ZMK RGB underglow while showing widget indication"
-    depends on ZMK_RGB_UNDERGLOW
-    default y
-    help
-      Driver-only workaround. This uses public zmk_rgb_underglow_off/on calls
-      to stop normal underglow from repainting the strip during indication.
-      ZMK debounces settings saves, so short off/on sequences should usually
-      end with the original on state being saved.
-
-config WS2812_WIDGET_UNDERGLOW_OFF_DELAY_MS
-    int "Delay after turning off RGB underglow before widget indication"
-    default 120
-    depends on WS2812_WIDGET_PAUSE_RGB_UNDERGLOW
-
-config WS2812_WIDGET_UNDERGLOW_RESTORE_DELAY_MS
-    int "Delay before restoring RGB underglow after widget indication"
-    default 80
-    depends on WS2812_WIDGET_PAUSE_RGB_UNDERGLOW
-
-config WS2812_WIDGET_AUTO_DISABLE_AFTER_INACTIVITY
-    bool "Disable periodic indications after inactivity"
-    default n
-
-config WS2812_WIDGET_INACTIVITY_DISABLE_MS
-    int "Inactivity time before periodic indications are disabled"
-    default 1200000
-    depends on WS2812_WIDGET_AUTO_DISABLE_AFTER_INACTIVITY
-
-config WS2812_WIDGET_USE_EXT_POWER
-    bool "Compatibility option for external power handling"
-    default n
-
-config WS2812_WIDGET_EXT_POWER_STARTUP_DELAY_MS
-    int "Compatibility startup delay for external power"
-    default 100
-    depends on WS2812_WIDGET_USE_EXT_POWER
-
-config WS2812_WIDGET_RESTORE_EXT_POWER_OFF
-    bool "Compatibility option to restore external power off"
-    default n
-    depends on WS2812_WIDGET_USE_EXT_POWER
 
 endif
