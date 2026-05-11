@@ -59,7 +59,6 @@ config WS2812_WIDGET_UNDERGLOW_RESTORE_DELAY_MS
     default 80
     depends on WS2812_WIDGET_PAUSE_RGB_UNDERGLOW
 
-# Compatibility option. Do not enable without a patched ZMK core.
 config WS2812_WIDGET_USE_RGB_UNDERGLOW_OVERLAY_API
     bool "Compatibility option: use patched RGB underglow overlay API"
     depends on ZMK_RGB_UNDERGLOW
@@ -69,17 +68,22 @@ config WS2812_WIDGET_USE_RGB_UNDERGLOW_OVERLAY_API
       zmk_rgb_underglow_overlay_suspend()/resume().
 
 config WS2812_WIDGET_USE_EXT_POWER
-    bool "Compatibility option for external power handling"
-    default n
+    bool "Temporarily enable external power for WS2812 indications"
+    depends on ZMK_EXT_POWER
+    default y if ZMK_EXT_POWER
+    help
+      Enable external power before writing indicator colors to the WS2812 strip.
+      This is required when RGB underglow is OFF and the LED VCC rail is also OFF.
 
 config WS2812_WIDGET_EXT_POWER_STARTUP_DELAY_MS
-    int "Compatibility startup delay for external power"
+    int "Delay after enabling external power before writing LEDs"
     default 100
+    range 0 1000
     depends on WS2812_WIDGET_USE_EXT_POWER
 
 config WS2812_WIDGET_RESTORE_EXT_POWER_OFF
-    bool "Compatibility option to restore external power off"
-    default n
+    bool "Restore external power to OFF after indication if it was OFF before"
+    default y
     depends on WS2812_WIDGET_USE_EXT_POWER
 
 # ---------------------------------------------------------------------
@@ -291,8 +295,13 @@ config WS2812_WIDGET_BATTERY_COLOR_CRITICAL
     depends on WS2812_WIDGET_SHOW_BATTERY
 
 config WS2812_WIDGET_BATTERY_REMINDER
-    bool "Show periodic red battery reminder when battery is critical"
+    bool "Show periodic red battery reminder"
     depends on WS2812_WIDGET_SHOW_BATTERY
+    default y
+
+config WS2812_WIDGET_BATTERY_REMINDER_ONLY_CRITICAL
+    bool "Only show periodic battery reminder when battery is critical"
+    depends on WS2812_WIDGET_BATTERY_REMINDER
     default y
 
 config WS2812_WIDGET_BATTERY_REMINDER_INTERVAL_MS
