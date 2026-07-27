@@ -32,3 +32,7 @@ void ws2812_indicate_connectivity(void);
  * @brief Queue a manual WS2812 layer indication.
  */
 void ws2812_indicate_layer(void);
+/**
+ * @brief Apply layer-sync color locally. Safe to call on both central and peripheral.
+ */
+void ws2812_apply_layer_sync(bool enabled);

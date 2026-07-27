@@ -1,0 +1,5 @@
+description: WS2812 layer sync behavior (runs on all split parts automatically)
+
+compatible: "zmk,behavior-ws2812-layer-sync"
+
+include: one_param.yaml
