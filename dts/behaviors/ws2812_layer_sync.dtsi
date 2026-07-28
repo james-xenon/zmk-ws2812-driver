@@ -1,5 +1,6 @@
 / {
     behaviors {
+        ws2812_lsync: wlsync {
             compatible = "zmk,behavior-ws2812-layer-sync";
             #binding-cells = <1>;
         };
