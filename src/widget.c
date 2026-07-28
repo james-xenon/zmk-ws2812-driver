@@ -9,7 +9,7 @@
  * - temporarily enables external power so indicators are visible even when RGB is OFF.
  */
 
- #include <zmk/behavior.h>
+#include <zmk/behavior.h>
 #include <zmk/behavior_queue.h>
 #include <string.h>
 
@@ -337,15 +337,16 @@ static struct indicator_request make_manual_layer_request(void) {
 }
 
 void ws2812_indicate_layer(void) {
-    void ws2812_apply_layer_sync(bool enabled) {
-#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE)
-    last_layer_indication_ms = k_uptime_get();
-    enqueue_indicator(make_layer_request(enabled), false);
-#endif
-}
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE)
     last_layer_indication_ms = k_uptime_get();
     enqueue_indicator(make_manual_layer_request(), false);
+#endif
+}
+
+void ws2812_apply_layer_sync(bool enabled) {
+#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE)
+    last_layer_indication_ms = k_uptime_get();
+    enqueue_indicator(make_layer_request(enabled), false);
 #endif
 }
 
@@ -398,8 +399,8 @@ static void layer_indicator_work_cb(struct k_work *work) {
     bool state = pending_layer_state;
     pending_layer_valid = false;
 
-    struct zmk_behavior_binding binding = {
-        .behavior_dev = "wlsync",
+   struct zmk_behavior_binding binding = {
+        .behavior_dev = DEVICE_DT_NAME(DT_NODELABEL(ws2812_lsync)),
         .param1 = state ? 1 : 0,
         .param2 = 0,
     };
