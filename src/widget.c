@@ -451,6 +451,15 @@ ZMK_SUBSCRIPTION(ws2812_layer_listener, zmk_layer_state_changed);
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY)
 
 static struct led_rgb get_battery_status_color(uint8_t battery_level) {
+    /*
+     * 5-zone colour map:
+     *   0%                          -> off (not connected / unknown)
+     *   1 .. CRITICAL               -> CRITICAL  (default red)
+     *   CRITICAL+1 .. LOW           -> LOW       (default orange)
+     *   LOW+1 .. HIGH-1             -> MEDIUM    (default yellow)
+     *   HIGH .. FULL-1              -> HIGH      (default green)
+     *   FULL .. 100                 -> FULL      (default cyan)
+     */
     if (battery_level == 0) {
         return hex_to_rgb(CONFIG_WS2812_WIDGET_COLOR_OFF);
     }
@@ -461,6 +470,10 @@ static struct led_rgb get_battery_status_color(uint8_t battery_level) {
 
     if (battery_level <= CONFIG_WS2812_WIDGET_BATTERY_LEVEL_LOW) {
         return hex_to_rgb(CONFIG_WS2812_WIDGET_BATTERY_COLOR_LOW);
+    }
+
+    if (battery_level >= CONFIG_WS2812_WIDGET_BATTERY_LEVEL_FULL) {
+        return hex_to_rgb(CONFIG_WS2812_WIDGET_BATTERY_COLOR_FULL);
     }
 
     if (battery_level >= CONFIG_WS2812_WIDGET_BATTERY_LEVEL_HIGH) {
@@ -519,11 +532,12 @@ void ws2812_indicate_battery_both(void) {
     }
 
     enqueue_indicator(
-        make_battery_request(get_battery_status_color(local_level), 2,
+        make_battery_request(get_battery_status_color(local_level),
+                             CONFIG_WS2812_WIDGET_BATTERY_BOTH_LEFT_REPEAT,
                              INDICATOR_KIND_BATTERY_MANUAL),
         false);
 
-    /* --- Разделитель: белая вспышка между половинами --- */
+    /* --- Разделитель: пауза между половинами --- */
     struct indicator_request sep = {
         .kind     = INDICATOR_KIND_SEPARATOR,
         .hold_ms  = CONFIG_WS2812_WIDGET_BATTERY_BOTH_SEPARATOR_MS,
@@ -532,7 +546,8 @@ void ws2812_indicate_battery_both(void) {
 
     /* --- Правая половина --- */
     enqueue_indicator(
-        make_battery_request(get_battery_status_color(peripheral_battery_level), 2,
+        make_battery_request(get_battery_status_color(peripheral_battery_level),
+                             CONFIG_WS2812_WIDGET_BATTERY_BOTH_RIGHT_REPEAT,
                              INDICATOR_KIND_BATTERY_MANUAL),
         false);
 

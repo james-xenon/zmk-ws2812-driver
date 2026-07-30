@@ -259,40 +259,96 @@ config WS2812_WIDGET_SHOW_BATTERY_ON_START
     depends on WS2812_WIDGET_SHOW_BATTERY
     default n
 
+# ---------------------------------------------------------------------
+# Battery level thresholds (5 zones: full / high / medium / low / critical)
+# ---------------------------------------------------------------------
+
+config WS2812_WIDGET_BATTERY_LEVEL_FULL
+    int "Full battery level percentage (top zone threshold)"
+    default 95
+    depends on WS2812_WIDGET_SHOW_BATTERY
+    help
+      Battery >= this value shows FULL color (default: cyan).
+
 config WS2812_WIDGET_BATTERY_LEVEL_HIGH
     int "High battery level percentage"
-    default 80
+    default 60
     depends on WS2812_WIDGET_SHOW_BATTERY
+    help
+      Battery >= this value (but below FULL) shows HIGH color (default: green).
 
 config WS2812_WIDGET_BATTERY_LEVEL_LOW
     int "Low battery level percentage"
-    default 20
+    default 30
     depends on WS2812_WIDGET_SHOW_BATTERY
+    help
+      Battery below this value (but above CRITICAL) shows LOW color (default: orange).
 
 config WS2812_WIDGET_BATTERY_LEVEL_CRITICAL
     int "Critical battery level percentage"
-    default 20
+    default 15
     depends on WS2812_WIDGET_SHOW_BATTERY
+    help
+      Battery <= this value shows CRITICAL color (default: red).
+
+# ---------------------------------------------------------------------
+# Battery colors (5 zones)
+# ---------------------------------------------------------------------
+
+config WS2812_WIDGET_BATTERY_COLOR_FULL
+    hex "Full battery color (>= BATTERY_LEVEL_FULL)"
+    default 0x00FFFF
+    depends on WS2812_WIDGET_SHOW_BATTERY
+    help
+      Shown when battery is nearly full. Default: cyan.
 
 config WS2812_WIDGET_BATTERY_COLOR_HIGH
-    hex "High battery level color"
+    hex "High battery color (>= BATTERY_LEVEL_HIGH, < FULL)"
     default 0x00FF00
     depends on WS2812_WIDGET_SHOW_BATTERY
+    help
+      Shown when battery is high. Default: green.
 
 config WS2812_WIDGET_BATTERY_COLOR_MEDIUM
-    hex "Medium battery level color"
+    hex "Medium battery color (between HIGH and LOW)"
     default 0xFFFF00
     depends on WS2812_WIDGET_SHOW_BATTERY
+    help
+      Shown when battery is medium. Default: yellow.
 
 config WS2812_WIDGET_BATTERY_COLOR_LOW
-    hex "Low battery level color"
+    hex "Low battery color (below LOW, above CRITICAL)"
     default 0xFF8000
     depends on WS2812_WIDGET_SHOW_BATTERY
+    help
+      Shown when battery is low. Default: orange.
 
 config WS2812_WIDGET_BATTERY_COLOR_CRITICAL
-    hex "Critical battery level color"
+    hex "Critical battery color (<= BATTERY_LEVEL_CRITICAL)"
     default 0xFF0000
     depends on WS2812_WIDGET_SHOW_BATTERY
+    help
+      Shown when battery is critical. Default: red.
+
+# ---------------------------------------------------------------------
+# Repeat count for both-halves indication
+# ---------------------------------------------------------------------
+
+config WS2812_WIDGET_BATTERY_BOTH_LEFT_REPEAT
+    int "Number of blinks for LEFT half in battery-both indication"
+    default 2
+    range 1 10
+    depends on WS2812_WIDGET_SHOW_BATTERY
+    help
+      How many times the left (central) half blinks when using ws2812_wdg 5.
+
+config WS2812_WIDGET_BATTERY_BOTH_RIGHT_REPEAT
+    int "Number of blinks for RIGHT half in battery-both indication"
+    default 2
+    range 1 10
+    depends on WS2812_WIDGET_SHOW_BATTERY
+    help
+      How many times the right (peripheral) half blinks when using ws2812_wdg 5.
 
 config WS2812_WIDGET_BATTERY_REMINDER
     bool "Show periodic red battery reminder"
