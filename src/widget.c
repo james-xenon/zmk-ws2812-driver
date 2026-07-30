@@ -87,9 +87,11 @@ static bool activity_active = true;
 static int64_t last_activity_ms;
 static int64_t last_layer_indication_ms;
 
-/* Cache peripheral battery level — updated via zmk_battery_state_changed event */
+/* Cache peripheral battery level — updated via zmk_battery_state_changed event.
+ * Only meaningful on central when FETCHING is enabled. */
 #if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING) && IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY) && \
-    IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+    IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL) && \
+    IS_ENABLED(CONFIG_ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING)
 static uint8_t peripheral_battery_level = 0;
 #endif
 
@@ -505,7 +507,8 @@ void ws2812_indicate_battery_both(void) {
      *
      * На периферийной сборке — просто показываем свою батарею.
      */
-#if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+#if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL) && \
+    IS_ENABLED(CONFIG_ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING)
 
     /* --- Левая половина --- */
     uint8_t local_level = zmk_battery_state_of_charge();
@@ -587,11 +590,24 @@ static int battery_listener_cb(const zmk_event_t *eh) {
         return 0;
     }
 
-    /* Кэшируем заряд периферии (source != 0 означает периферийное устройство) */
-#if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
-    if (ev->source != 0) {
-        peripheral_battery_level = ev->state_of_charge;
-        LOG_DBG("WS2812: peripheral battery cached: %d%%", peripheral_battery_level);
+    /*
+     * Кэшируем заряд периферии.
+     * В ZMK v0.3.0 структура zmk_battery_state_changed не имеет поля source.
+     * Периферийные события приходят ТОЛЬКО когда включён
+     * CONFIG_ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING.
+     * Определяем источник так: если значение отличается от текущего локального
+     * заряда И локальный заряд уже известен — это событие от периферии.
+     * Иначе обновляем кэш периферии напрямую каждый раз когда приходит
+     * значение, отличное от локального.
+     */
+#if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL) && \
+    IS_ENABLED(CONFIG_ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING)
+    {
+        uint8_t local = zmk_battery_state_of_charge();
+        if (ev->state_of_charge != local) {
+            peripheral_battery_level = ev->state_of_charge;
+            LOG_DBG("WS2812: peripheral battery cached: %d%%", peripheral_battery_level);
+        }
     }
 #endif
 
