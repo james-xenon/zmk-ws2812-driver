@@ -357,6 +357,15 @@ config WS2812_WIDGET_BATTERY_BLINK_PAUSE_MS
     default 1000
     range 0 5000
 
+config WS2812_WIDGET_BATTERY_BOTH_SEPARATOR_MS
+    int "Pause between left and right half battery indications (ms)"
+    depends on WS2812_WIDGET_SHOW_BATTERY
+    default 800
+    range 200 3000
+    help
+      Duration of the gap between the left and right half battery blinks
+      when using ws2812_wdg 5 (indicate battery both halves).
+
 config WS2812_WIDGET_BATTERY_COOLDOWN_AFTER_LAYER_MS
     int "Delay battery reminder after layer indication in milliseconds"
     depends on WS2812_WIDGET_SHOW_BATTERY

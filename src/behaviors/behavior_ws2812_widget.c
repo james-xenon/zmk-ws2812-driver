@@ -18,10 +18,11 @@ static int __maybe_unused behavior_ws2812_wdg_init(const struct device *dev) {
 /*
  * Binding parameter:
  *   &ws2812_wdg 0 = manual layer blink
- *   &ws2812_wdg 1 = manual battery blink
+ *   &ws2812_wdg 1 = manual battery blink (local half only)
  *   &ws2812_wdg 2 = toggle all WS2812 indication ON/OFF
  *   &ws2812_wdg 3 = force indication ON
  *   &ws2812_wdg 4 = force indication OFF
+ *   &ws2812_wdg 5 = battery blink BOTH halves (left then right)
  */
 static int on_keymap_binding_pressed(struct zmk_behavior_binding *binding,
                                      struct zmk_behavior_binding_event event) {
@@ -45,6 +46,12 @@ static int on_keymap_binding_pressed(struct zmk_behavior_binding *binding,
 
     case 4:
         ws2812_set_indication_enabled(false);
+        break;
+
+    case 5:
+#if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING) && IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY)
+        ws2812_indicate_battery_both();
+#endif
         break;
 
     case 0:

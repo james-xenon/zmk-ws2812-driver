@@ -7,6 +7,7 @@
  * - uses temporary overlay indications;
  * - guards layer-state subscription so peripheral split builds link correctly;
  * - temporarily enables external power so indicators are visible even when RGB is OFF.
+ * - supports dual-half battery indication via ws2812_indicate_battery_both().
  */
 
 #include <zmk/behavior.h>
@@ -64,6 +65,7 @@ enum indicator_kind {
     INDICATOR_KIND_BATTERY_MANUAL,
     INDICATOR_KIND_BATTERY_CRITICAL,
     INDICATOR_KIND_CONNECTIVITY,
+    INDICATOR_KIND_SEPARATOR,
 };
 
 struct indicator_request {
@@ -84,6 +86,12 @@ static bool widget_enabled = IS_ENABLED(CONFIG_WS2812_WIDGET_ENABLED_ON_START);
 static bool activity_active = true;
 static int64_t last_activity_ms;
 static int64_t last_layer_indication_ms;
+
+/* Cache peripheral battery level — updated via zmk_battery_state_changed event */
+#if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING) && IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY) && \
+    IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+static uint8_t peripheral_battery_level = 0;
+#endif
 
 K_MSGQ_DEFINE(indicator_msgq, sizeof(struct indicator_request), 12, 4);
 
@@ -273,6 +281,12 @@ static void restore_ext_power_if_needed(bool ext_power_was_on, bool underglow_wa
 }
 
 static void execute_indicator_request(const struct indicator_request *request) {
+    /* Separator — просто пауза без подсветки, underglow не трогаем */
+    if (request->kind == INDICATOR_KIND_SEPARATOR) {
+        k_sleep(K_MSEC(request->hold_ms));
+        return;
+    }
+
     bool underglow_was_on = pause_underglow_if_needed();
     bool ext_power_was_on = enable_ext_power_if_needed();
 
@@ -482,6 +496,49 @@ void ws2812_indicate_battery(void) {
                       false);
 }
 
+void ws2812_indicate_battery_both(void) {
+    /*
+     * Показываем батарею обеих половин последовательно:
+     *   1) левая (центральная): 2 вспышки цветом своего заряда
+     *   2) пауза — белая вспышка-разделитель
+     *   3) правая (периферийная): 2 вспышки цветом её заряда
+     *
+     * На периферийной сборке — просто показываем свою батарею.
+     */
+#if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+
+    /* --- Левая половина --- */
+    uint8_t local_level = zmk_battery_state_of_charge();
+    int retry = 0;
+    while (local_level == 0 && retry++ < 10) {
+        k_sleep(K_MSEC(100));
+        local_level = zmk_battery_state_of_charge();
+    }
+
+    enqueue_indicator(
+        make_battery_request(get_battery_status_color(local_level), 2,
+                             INDICATOR_KIND_BATTERY_MANUAL),
+        false);
+
+    /* --- Разделитель: белая вспышка между половинами --- */
+    struct indicator_request sep = {
+        .kind     = INDICATOR_KIND_SEPARATOR,
+        .hold_ms  = CONFIG_WS2812_WIDGET_BATTERY_BOTH_SEPARATOR_MS,
+    };
+    enqueue_indicator(sep, false);
+
+    /* --- Правая половина --- */
+    enqueue_indicator(
+        make_battery_request(get_battery_status_color(peripheral_battery_level), 2,
+                             INDICATOR_KIND_BATTERY_MANUAL),
+        false);
+
+#else
+    /* Периферия или несплит — показываем только себя */
+    ws2812_indicate_battery();
+#endif
+}
+
 static struct k_work_delayable battery_reminder_work;
 
 static void schedule_next_battery_reminder(void) {
@@ -530,6 +587,14 @@ static int battery_listener_cb(const zmk_event_t *eh) {
         return 0;
     }
 
+    /* Кэшируем заряд периферии (source != 0 означает периферийное устройство) */
+#if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+    if (ev->source != 0) {
+        peripheral_battery_level = ev->state_of_charge;
+        LOG_DBG("WS2812: peripheral battery cached: %d%%", peripheral_battery_level);
+    }
+#endif
+
     if (ev->state_of_charge > 0 &&
         ev->state_of_charge <= CONFIG_WS2812_WIDGET_BATTERY_LEVEL_CRITICAL) {
         enqueue_indicator(make_battery_request(hex_to_rgb(CONFIG_WS2812_WIDGET_BATTERY_COLOR_CRITICAL),
@@ -546,6 +611,7 @@ ZMK_SUBSCRIPTION(ws2812_battery_listener, zmk_battery_state_changed);
 #endif
 #else
 void ws2812_indicate_battery(void) {}
+void ws2812_indicate_battery_both(void) {}
 #endif
 
 void ws2812_indicate_connectivity(void) {
