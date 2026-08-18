@@ -1,10 +1,10 @@
 /*
  * WS2812 temporary indicator widget for ZMK.
  *
- * Driver-only version:
+ * Driver-only version with Persistent Layer Color support:
  * - does not patch ZMK core;
- * - does not implement persistent layer colors;
- * - uses temporary overlay indications;
+ * - supports persistent layer colors on specific pixel ranges;
+ * - uses temporary overlay indications (battery, lsync) that restore persistent state;
  * - guards layer-state subscription so peripheral split builds link correctly;
  * - temporarily enables external power so indicators are visible even when RGB is OFF.
  * - supports dual-half battery indication via ws2812_indicate_battery_both().
@@ -87,6 +87,24 @@ static bool activity_active = true;
 static int64_t last_activity_ms;
 static int64_t last_layer_indication_ms;
 
+/* ========================================================================
+ * PERSISTENT LAYER COLOR SUPPORT
+ * ======================================================================== */
+
+#define MAX_PERSISTENT_LAYERS 4
+
+struct persistent_layer_config {
+    uint8_t layer;
+    struct led_rgb color;
+    uint8_t start_pixel;
+    uint8_t num_pixels;
+    bool configured;
+    bool active; /* true when layer is currently ON */
+};
+
+static struct persistent_layer_config persistent_layers[MAX_PERSISTENT_LAYERS];
+static bool persistent_underglow_active = false;
+
 /* Cache peripheral battery level — updated via zmk_battery_state_changed event.
  * Only meaningful on central when FETCHING is enabled. */
 #if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING) && IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY) && \
@@ -112,6 +130,71 @@ static int set_all_pixels(struct led_rgb color) {
 
     return led_strip_update_rgb(led_strip, pixels, WS2812_NUM_PIXELS);
 }
+
+/* --- Range-based pixel operations for persistent layers --- */
+
+static int set_pixel_range(struct led_rgb color, uint8_t start, uint8_t count) {
+    uint8_t end = MIN((uint16_t)start + count, WS2812_NUM_PIXELS);
+
+    for (uint8_t i = start; i < end; i++) {
+        pixels[i] = color;
+    }
+
+    return led_strip_update_rgb(led_strip, pixels, WS2812_NUM_PIXELS);
+}
+
+static void clear_pixel_range(uint8_t start, uint8_t count) {
+    set_pixel_range((struct led_rgb){0, 0, 0}, start, count);
+}
+
+static void apply_persistent_layers(void) {
+    bool any_active = false;
+
+    for (int i = 0; i < MAX_PERSISTENT_LAYERS; i++) {
+        if (persistent_layers[i].configured && persistent_layers[i].active) {
+            set_pixel_range(persistent_layers[i].color,
+                            persistent_layers[i].start_pixel,
+                            persistent_layers[i].num_pixels);
+            any_active = true;
+        }
+    }
+
+    persistent_underglow_active = any_active;
+}
+
+void ws2812_set_persistent_layer_color(uint8_t layer, uint32_t color_hex,
+                                       uint8_t start_pixel, uint8_t num_pixels) {
+    int slot = -1;
+
+    for (int i = 0; i < MAX_PERSISTENT_LAYERS; i++) {
+        if (persistent_layers[i].configured && persistent_layers[i].layer == layer) {
+            slot = i;
+            break;
+        }
+        if (!persistent_layers[i].configured && slot < 0) {
+            slot = i;
+        }
+    }
+
+    if (slot < 0) {
+        LOG_WRN("No free persistent layer slots");
+        return;
+    }
+
+    persistent_layers[slot].layer = layer;
+    persistent_layers[slot].color = hex_to_rgb(color_hex);
+    persistent_layers[slot].start_pixel = start_pixel;
+    persistent_layers[slot].num_pixels = num_pixels;
+    persistent_layers[slot].configured = true;
+    persistent_layers[slot].active = false;
+
+    LOG_INF("Persistent layer %d configured: color=0x%06X pixels=%d-%d",
+            layer, color_hex, start_pixel, start_pixel + num_pixels - 1);
+}
+
+/* ========================================================================
+ * END PERSISTENT LAYER COLOR SUPPORT
+ * ======================================================================== */
 
 static struct led_rgb scale_rgb(struct led_rgb color, uint16_t numerator, uint16_t denominator) {
     if (denominator == 0) {
@@ -310,6 +393,11 @@ static void execute_indicator_request(const struct indicator_request *request) {
 
     restore_underglow_if_needed(underglow_was_on);
     restore_ext_power_if_needed(ext_power_was_on, underglow_was_on);
+
+    /* Restore persistent layer colors after temporary indication completes */
+    if (persistent_underglow_active) {
+        apply_persistent_layers();
+    }
 }
 
 static void enqueue_indicator(struct indicator_request request, bool periodic) {
@@ -446,7 +534,59 @@ static int layer_listener_cb(const zmk_event_t *eh) {
 
 ZMK_LISTENER(ws2812_layer_listener, layer_listener_cb);
 ZMK_SUBSCRIPTION(ws2812_layer_listener, zmk_layer_state_changed);
-#endif
+
+/* ========================================================================
+ * PERSISTENT LAYER STATE LISTENER
+ * Handles instant ON/OFF of persistent layer colors without queue/animation
+ * ======================================================================== */
+
+static int persistent_layer_listener_cb(const zmk_event_t *eh) {
+    const struct zmk_layer_state_changed *ev = as_zmk_layer_state_changed(eh);
+
+    if (!initialized || ev == NULL) {
+        return 0;
+    }
+
+    for (int i = 0; i < MAX_PERSISTENT_LAYERS; i++) {
+        if (!persistent_layers[i].configured) {
+            continue;
+        }
+
+        if (persistent_layers[i].layer == ev->layer) {
+            if (ev->state) {
+                /* Layer activated — turn ON persistent color */
+                set_pixel_range(persistent_layers[i].color,
+                                persistent_layers[i].start_pixel,
+                                persistent_layers[i].num_pixels);
+                persistent_layers[i].active = true;
+                persistent_underglow_active = true;
+                LOG_DBG("Persistent layer %d ON", ev->layer);
+            } else {
+                /* Layer deactivated — turn OFF persistent color */
+                clear_pixel_range(persistent_layers[i].start_pixel,
+                                  persistent_layers[i].num_pixels);
+                persistent_layers[i].active = false;
+                LOG_DBG("Persistent layer %d OFF", ev->layer);
+
+                /* Check if any other persistent layers remain active */
+                persistent_underglow_active = false;
+                for (int j = 0; j < MAX_PERSISTENT_LAYERS; j++) {
+                    if (persistent_layers[j].configured && persistent_layers[j].active) {
+                        persistent_underglow_active = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    return 0;
+}
+
+ZMK_LISTENER(ws2812_persistent_layer_listener, persistent_layer_listener_cb);
+ZMK_SUBSCRIPTION(ws2812_persistent_layer_listener, zmk_layer_state_changed);
+
+#endif /* CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE && (central or non-split) */
 
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY)
 
@@ -727,6 +867,9 @@ static void indicator_init_thread(void *d0, void *d1, void *d2) {
     set_all_pixels((struct led_rgb){0, 0, 0});
 
     LOG_INF("WS2812 temporary indicator initialized with %d pixels", WS2812_NUM_PIXELS);
+
+    /* Configure persistent layer 2 (symbols): Cyan on left half (pixels 0-20) */
+    ws2812_set_persistent_layer_color(2, 0x00FFFF, 0, 21);
 
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY)
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY_ON_START)
