@@ -41,7 +41,8 @@ static int behavior_ws2812_layer_sync_init(const struct device *dev) {
     return 0;
 }
 
-static const struct behavior_driver_api behavior_ws2812_layer_sync_driver_api = {
+// ИСПРАВЛЕНИЕ ДЛЯ ZMK v0.3.0: используем zmk_behavior_driver_api
+static const struct zmk_behavior_driver_api behavior_ws2812_layer_sync_driver_api = {
     .binding_pressed = on_keymap_binding_pressed,
     .binding_released = on_keymap_binding_released,
 };
@@ -49,3 +50,5 @@ static const struct behavior_driver_api behavior_ws2812_layer_sync_driver_api = 
 DEVICE_DT_INST_DEFINE(0, behavior_ws2812_layer_sync_init, NULL, NULL, NULL,
                       APPLICATION, CONFIG_KERNEL_INIT_PRIORITY_DEFAULT,
                       &behavior_ws2812_layer_sync_driver_api);
+
+#include <drivers/behavior.h>
