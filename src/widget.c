@@ -736,8 +736,11 @@ static void indicator_init_thread(void *d0, void *d1, void *d2) {
 	set_all_pixels((struct led_rgb){0,0,0});
 	LOG_INF("WS2812 temporary indicator initialized with %d pixels", WS2812_NUM_PIXELS);
 
-	/* Persistent cyan на слое 2 (symbols), левая половина (пиксели 0-20) */
-	ws2812_set_persistent_layer_color(2, 0x00FFFF, 0, 21);
+	/* Persistent cyan на слое 1 (numbers/цифры), левая половина (пиксели 0-20) */
+	ws2812_set_persistent_layer_color(1, 0x00FFFF, 0, 21);
+
+	/* Persistent cyan на слое 2 (symbols/символы), правая половина (пиксели 21-41) */
+	ws2812_set_persistent_layer_color(2, 0x00FFFF, 21, 21);
 
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY)
 	#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY_ON_START)
