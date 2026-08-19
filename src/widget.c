@@ -3,9 +3,9 @@
  *
  * Driver-only version with Persistent Layer Color support:
  * - does not patch ZMK core;
- * - supports persistent layer colors on specific pixel ranges (BOTH halves);
+ * - supports persistent layer colors on specific pixel ranges;
+ * - persistent listener runs CENTRAL ONLY (peripheral uses ws2812_wdg GLOBAL);
  * - uses temporary overlay indications (battery, lsync) that restore persistent state;
- * - guards layer-state subscription so peripheral split builds link correctly;
  * - temporarily enables external power so indicators are visible even when RGB is OFF;
  * - supports dual-half battery indication via ws2812_indicate_battery_both();
  * - restores persistent colors after sleep/wake and after temporary indications.
@@ -38,8 +38,9 @@
 #include <drivers/ext_power.h>
 #endif
 
-/* layer_state_changed needed for both central-only lsync AND persistent (both halves) */
-#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE)
+/* layer_state_changed only available on central or non-split */
+#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE) && \
+    (!IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL))
 #include <zmk/events/layer_state_changed.h>
 #include <zmk/keymap.h>
 #endif
@@ -175,9 +176,26 @@ void ws2812_set_persistent_layer_color(uint8_t layer, uint32_t color_hex,
     persistent_layers[slot].start_pixel = start_pixel;
     persistent_layers[slot].num_pixels = num_pixels;
     persistent_layers[slot].configured = true;
-    persistent_layers[slot].active = false;
-    LOG_INF("Persistent layer %d configured: color=0x%06X pixels=%d-%d",
+    persistent_layers[slot].active = true; /* Immediately activate when set via behavior */
+    LOG_INF("Persistent layer %d set: color=0x%06X pixels=%d-%d",
             layer, color_hex, start_pixel, start_pixel + num_pixels - 1);
+
+    /* Apply immediately so both halves show the color right away */
+    if (num_pixels > 0 && color_hex != 0) {
+        set_pixel_range(hex_to_rgb(color_hex), start_pixel, num_pixels);
+        persistent_underglow_active = true;
+    } else {
+        /* Clearing: deactivate this slot */
+        persistent_layers[slot].active = false;
+        clear_pixel_range(start_pixel, num_pixels);
+        persistent_underglow_active = false;
+        for (int j = 0; j < MAX_PERSISTENT_LAYERS; j++) {
+            if (persistent_layers[j].configured && persistent_layers[j].active) {
+                persistent_underglow_active = true;
+                break;
+            }
+        }
+    }
 }
 
 /* ========================================================================
@@ -281,7 +299,6 @@ static bool pause_underglow_if_needed(void) {
 static void restore_underglow_if_needed(bool was_on) {
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_PAUSE_RGB_UNDERGLOW) && IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW)
     if (was_on) {
-        /* Restore persistent BEFORE turning underglow back on */
         if (persistent_underglow_active) {
             apply_persistent_layers();
         }
@@ -293,7 +310,6 @@ static void restore_underglow_if_needed(bool was_on) {
     ARG_UNUSED(was_on);
 #endif
 
-    /* Underglow was not on — restore persistent or clear */
     if (persistent_underglow_active) {
         apply_persistent_layers();
     } else {
@@ -340,8 +356,8 @@ static void restore_ext_power_if_needed(bool ext_power_was_on, bool underglow_wa
 #endif
 }
 
-/* FIX #2: Removed duplicate apply_persistent_layers() call.
- * Restoration is now handled inside restore_underglow_if_needed(). */
+/* FIX #2: No duplicate apply_persistent_layers here.
+ * Restoration handled inside restore_underglow_if_needed. */
 static void execute_indicator_request(const struct indicator_request *request) {
     if (request->kind == INDICATOR_KIND_SEPARATOR) {
         k_sleep(K_MSEC(request->hold_ms));
@@ -421,11 +437,11 @@ void ws2812_apply_layer_sync(bool enabled) {
 }
 
 /* ========================================================================
- * CENTRAL-ONLY: Explicit layer triggers → lsync debounce → blink
- * Must stay central-only because it uses zmk_behavior_queue to trigger
- * lsync which then enqueues blink indicators.
+ * CENTRAL-ONLY: Explicit layer triggers + Persistent layer listener
+ * Both require zmk_layer_state_changed which only exists on central.
+ * Peripheral gets persistent colors via ws2812_wdg GLOBAL behavior.
  * ======================================================================== */
-#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE) &&                                      \
+#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE) && \
     (!IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL))
 
 static bool layer_is_explicit_trigger(uint8_t layer) {
@@ -496,15 +512,7 @@ static int layer_listener_cb(const zmk_event_t *eh) {
 ZMK_LISTENER(ws2812_layer_listener, layer_listener_cb);
 ZMK_SUBSCRIPTION(ws2812_layer_listener, zmk_layer_state_changed);
 
-#endif /* CENTRAL-ONLY explicit triggers */
-
-/* ========================================================================
- * PERSISTENT LAYER STATE LISTENER — BOTH HALVES
- * No SPLIT_ROLE_CENTRAL guard. Each half has its own pixels[] and led_strip.
- * Handles instant ON/OFF of persistent layer colors without queue/animation.
- * ======================================================================== */
-#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE)
-
+/* Persistent layer listener — CENTRAL ONLY */
 static int persistent_layer_listener_cb(const zmk_event_t *eh) {
     const struct zmk_layer_state_changed *ev = as_zmk_layer_state_changed(eh);
 
@@ -548,7 +556,7 @@ static int persistent_layer_listener_cb(const zmk_event_t *eh) {
 ZMK_LISTENER(ws2812_persistent_layer_listener, persistent_layer_listener_cb);
 ZMK_SUBSCRIPTION(ws2812_persistent_layer_listener, zmk_layer_state_changed);
 
-#endif /* PERSISTENT LAYER — both halves */
+#endif /* CENTRAL-ONLY: explicit triggers + persistent listener */
 
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY)
 
@@ -721,7 +729,6 @@ static int activity_listener_cb(const zmk_event_t *eh) {
     if (ev->state == ZMK_ACTIVITY_ACTIVE) {
         activity_active = true;
         ws2812_note_activity();
-        /* Restore persistent layers on wake */
         if (initialized && persistent_underglow_active) {
             apply_persistent_layers();
         }
@@ -741,7 +748,7 @@ static void indicator_process_thread(void *d0, void *d1, void *d2) {
     ARG_UNUSED(d1);
     ARG_UNUSED(d2);
 
-#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE) &&                                      \
+#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE) && \
     (!IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL))
     k_work_init_delayable(&layer_indicator_work, layer_indicator_work_cb);
 #endif
@@ -779,7 +786,9 @@ static void indicator_init_thread(void *d0, void *d1, void *d2) {
 
     LOG_INF("WS2812 temporary indicator initialized with %d pixels", WS2812_NUM_PIXELS);
 
-    /* Configure persistent layer 2 (symbols): Cyan on left half (pixels 0-20) */
+    /* Configure persistent layer 2 (symbols): Cyan on left half (pixels 0-20).
+     * On central: also activates via persistent_layer_listener_cb.
+     * On peripheral: activated via &ws2812_wdg 6 2 in keymap macros. */
     ws2812_set_persistent_layer_color(2, 0x00FFFF, 0, 21);
 
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY)
