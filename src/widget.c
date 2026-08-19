@@ -735,10 +735,10 @@ static void indicator_init_thread(void *d0, void *d1, void *d2) {
 	ws2812_set_persistent_layer_color(3, 0x00FFFF, 0, 21);
 
 	/* Persistent black на слое 15 (symbnolight_layer), вся лента (выключает подсветку) */
-	ws2812_set_persistent_layer_color(15, 0x000000, 0, 42);
+	//ws2812_set_persistent_layer_color(15, 0x000000, 0, 42);
 
 	/* Persistent black на слое 16 (numbnolight_layer), вся лента (выключает подсветку) */
-	ws2812_set_persistent_layer_color(16, 0x000000, 0, 42);
+	//ws2812_set_persistent_layer_color(16, 0x000000, 0, 42);
 
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY)
 	#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY_ON_START)
