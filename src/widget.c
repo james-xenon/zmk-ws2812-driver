@@ -84,7 +84,7 @@ static int64_t last_layer_indication_ms;
  * PERSISTENT LAYER COLOR SUPPORT
  * ======================================================================== */
 
-#define MAX_PERSISTENT_LAYERS 4
+#define MAX_PERSISTENT_LAYERS 6
 
 struct persistent_layer_config {
 	uint8_t layer;
@@ -97,7 +97,7 @@ struct persistent_layer_config {
 
 static struct persistent_layer_config persistent_layers[MAX_PERSISTENT_LAYERS];
 static bool persistent_underglow_active = false;
-static bool persistent_underglow_was_on = false;  // Отслеживаем состояние underglow
+static bool persistent_underglow_was_on = false;
 static bool persistent_ext_power_was_on = true;
 
 #if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING) && IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY) && \
@@ -231,7 +231,6 @@ static bool periodic_indication_allowed(void) {
 
 static bool indication_allowed(bool periodic) {
 	if (!initialized || !widget_enabled || !activity_active) return false;
-	// Блокируем мигания (батарея/сеть), если активна персистентная подсветка слоя
 	if (persistent_underglow_active) return false;
 	if (periodic && !periodic_indication_allowed()) return false;
 	return true;
@@ -456,7 +455,6 @@ static int persistent_layer_listener_cb(const zmk_event_t *eh) {
 
 	bool any_active_before = persistent_underglow_active;
 
-	// 1. Обновляем статус активности нужного слоя
 	for (int i = 0; i < MAX_PERSISTENT_LAYERS; i++) {
 		if (!persistent_layers[i].configured) continue;
 
@@ -465,7 +463,6 @@ static int persistent_layer_listener_cb(const zmk_event_t *eh) {
 		}
 	}
 
-	// 2. Проверяем, активен ли хоть один персистентный слой сейчас
 	bool any_active_now = false;
 	for (int i = 0; i < MAX_PERSISTENT_LAYERS; i++) {
 		if (persistent_layers[i].configured && persistent_layers[i].active) {
@@ -475,15 +472,12 @@ static int persistent_layer_listener_cb(const zmk_event_t *eh) {
 	}
 	persistent_underglow_active = any_active_now;
 
-	// 3. Обработка переходов (включение/выключение слоя)
 	if (any_active_now && !any_active_before) {
-		// Слой включился: ставим ZMK underglow на паузу, чтобы он не затер наши пиксели
 		persistent_underglow_was_on = pause_underglow_if_needed();
 		persistent_ext_power_was_on = enable_ext_power_if_needed();
 		apply_persistent_layers();
 
 	} else if (!any_active_now && any_active_before) {
-		// Слой выключился: чистим пиксели и возвращаем underglow
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_PAUSE_RGB_UNDERGLOW) && IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW)
 		if (persistent_underglow_was_on) {
 			for (int i = 0; i < MAX_PERSISTENT_LAYERS; i++) {
@@ -507,7 +501,6 @@ static int persistent_layer_listener_cb(const zmk_event_t *eh) {
 		restore_ext_power_if_needed(persistent_ext_power_was_on, persistent_underglow_was_on);
 
 	} else if (any_active_now && any_active_before) {
-		// Изменение состояния при наложении слоев, просто перерисовываем
 		apply_persistent_layers();
 	}
 
@@ -684,7 +677,6 @@ static int activity_listener_cb(const zmk_event_t *eh) {
 		activity_active = true;
 		ws2812_note_activity();
 		if (persistent_underglow_active) {
-			// При выходе из сна снова ставим underglow на паузу, если слой все еще активен
 			persistent_underglow_was_on = pause_underglow_if_needed();
 			persistent_ext_power_was_on = enable_ext_power_if_needed();
 			apply_persistent_layers();
@@ -736,11 +728,17 @@ static void indicator_init_thread(void *d0, void *d1, void *d2) {
 	set_all_pixels((struct led_rgb){0,0,0});
 	LOG_INF("WS2812 temporary indicator initialized with %d pixels", WS2812_NUM_PIXELS);
 
-	/* Persistent cyan на слое 1 (numbers/цифры), левая половина (пиксели 0-20) */
-	ws2812_set_persistent_layer_color(1, 0x00FFFF, 0, 21);
-
-	/* Persistent cyan на слое 2 (symbols/символы), правая половина (пиксели 21-41) */
+	/* Persistent cyan на слое 2 (symb_layer), правая половина (пиксели 21-41) */
 	ws2812_set_persistent_layer_color(2, 0x00FFFF, 21, 21);
+
+	/* Persistent cyan на слое 3 (numb_layer), левая половина (пиксели 0-20) */
+	ws2812_set_persistent_layer_color(3, 0x00FFFF, 0, 21);
+
+	/* Persistent black на слое 15 (symbnolight_layer), вся лента (выключает подсветку) */
+	ws2812_set_persistent_layer_color(15, 0x000000, 0, 42);
+
+	/* Persistent black на слое 16 (numbnolight_layer), вся лента (выключает подсветку) */
+	ws2812_set_persistent_layer_color(16, 0x000000, 0, 42);
 
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY)
 	#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY_ON_START)
