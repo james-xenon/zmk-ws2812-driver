@@ -3,11 +3,12 @@
  *
  * Driver-only version with Persistent Layer Color support:
  * - does not patch ZMK core;
- * - supports persistent layer colors on specific pixel ranges;
+ * - supports persistent layer colors on specific pixel ranges (BOTH halves);
  * - uses temporary overlay indications (battery, lsync) that restore persistent state;
  * - guards layer-state subscription so peripheral split builds link correctly;
- * - temporarily enables external power so indicators are visible even when RGB is OFF.
- * - supports dual-half battery indication via ws2812_indicate_battery_both().
+ * - temporarily enables external power so indicators are visible even when RGB is OFF;
+ * - supports dual-half battery indication via ws2812_indicate_battery_both();
+ * - restores persistent colors after sleep/wake and after temporary indications.
  */
 
 #include <zmk/behavior.h>
@@ -37,8 +38,8 @@
 #include <drivers/ext_power.h>
 #endif
 
-#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE) &&                                      \
-    (!IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL))
+/* layer_state_changed needed for both central-only lsync AND persistent (both halves) */
+#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE)
 #include <zmk/events/layer_state_changed.h>
 #include <zmk/keymap.h>
 #endif
@@ -99,14 +100,12 @@ struct persistent_layer_config {
     uint8_t start_pixel;
     uint8_t num_pixels;
     bool configured;
-    bool active; /* true when layer is currently ON */
+    bool active;
 };
 
 static struct persistent_layer_config persistent_layers[MAX_PERSISTENT_LAYERS];
 static bool persistent_underglow_active = false;
 
-/* Cache peripheral battery level — updated via zmk_battery_state_changed event.
- * Only meaningful on central when FETCHING is enabled. */
 #if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING) && IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY) && \
     IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL) && \
     IS_ENABLED(CONFIG_ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING)
@@ -127,19 +126,14 @@ static int set_all_pixels(struct led_rgb color) {
     for (int i = 0; i < WS2812_NUM_PIXELS; i++) {
         pixels[i] = color;
     }
-
     return led_strip_update_rgb(led_strip, pixels, WS2812_NUM_PIXELS);
 }
 
-/* --- Range-based pixel operations for persistent layers --- */
-
 static int set_pixel_range(struct led_rgb color, uint8_t start, uint8_t count) {
     uint8_t end = MIN((uint16_t)start + count, WS2812_NUM_PIXELS);
-
     for (uint8_t i = start; i < end; i++) {
         pixels[i] = color;
     }
-
     return led_strip_update_rgb(led_strip, pixels, WS2812_NUM_PIXELS);
 }
 
@@ -149,7 +143,6 @@ static void clear_pixel_range(uint8_t start, uint8_t count) {
 
 static void apply_persistent_layers(void) {
     bool any_active = false;
-
     for (int i = 0; i < MAX_PERSISTENT_LAYERS; i++) {
         if (persistent_layers[i].configured && persistent_layers[i].active) {
             set_pixel_range(persistent_layers[i].color,
@@ -158,14 +151,12 @@ static void apply_persistent_layers(void) {
             any_active = true;
         }
     }
-
     persistent_underglow_active = any_active;
 }
 
 void ws2812_set_persistent_layer_color(uint8_t layer, uint32_t color_hex,
                                        uint8_t start_pixel, uint8_t num_pixels) {
     int slot = -1;
-
     for (int i = 0; i < MAX_PERSISTENT_LAYERS; i++) {
         if (persistent_layers[i].configured && persistent_layers[i].layer == layer) {
             slot = i;
@@ -175,19 +166,16 @@ void ws2812_set_persistent_layer_color(uint8_t layer, uint32_t color_hex,
             slot = i;
         }
     }
-
     if (slot < 0) {
         LOG_WRN("No free persistent layer slots");
         return;
     }
-
     persistent_layers[slot].layer = layer;
     persistent_layers[slot].color = hex_to_rgb(color_hex);
     persistent_layers[slot].start_pixel = start_pixel;
     persistent_layers[slot].num_pixels = num_pixels;
     persistent_layers[slot].configured = true;
     persistent_layers[slot].active = false;
-
     LOG_INF("Persistent layer %d configured: color=0x%06X pixels=%d-%d",
             layer, color_hex, start_pixel, start_pixel + num_pixels - 1);
 }
@@ -200,7 +188,6 @@ static struct led_rgb scale_rgb(struct led_rgb color, uint16_t numerator, uint16
     if (denominator == 0) {
         return color;
     }
-
     return (struct led_rgb){
         .r = (uint8_t)(((uint16_t)color.r * numerator) / denominator),
         .g = (uint8_t)(((uint16_t)color.g * numerator) / denominator),
@@ -212,20 +199,16 @@ static uint16_t fade_step_count(uint16_t duration_ms) {
     if (duration_ms == 0) {
         return 0;
     }
-
     return MAX(1, duration_ms / CONFIG_WS2812_WIDGET_FADE_STEP_MS);
 }
 
 static void fade_from_black_to_color(struct led_rgb color, uint16_t duration_ms) {
     uint16_t steps = fade_step_count(duration_ms);
-
     if (steps == 0) {
         set_all_pixels(color);
         return;
     }
-
     uint16_t delay_ms = MAX(1, duration_ms / steps);
-
     for (uint16_t step = 0; step <= steps; step++) {
         set_all_pixels(scale_rgb(color, step, steps));
         k_sleep(K_MSEC(delay_ms));
@@ -234,14 +217,11 @@ static void fade_from_black_to_color(struct led_rgb color, uint16_t duration_ms)
 
 static void fade_from_color_to_black(struct led_rgb color, uint16_t duration_ms) {
     uint16_t steps = fade_step_count(duration_ms);
-
     if (steps == 0) {
         set_all_pixels((struct led_rgb){0, 0, 0});
         return;
     }
-
     uint16_t delay_ms = MAX(1, duration_ms / steps);
-
     for (uint16_t step = 0; step <= steps; step++) {
         set_all_pixels(scale_rgb(color, steps - step, steps));
         k_sleep(K_MSEC(delay_ms));
@@ -251,13 +231,11 @@ static void fade_from_color_to_black(struct led_rgb color, uint16_t duration_ms)
 static bool periodic_indication_allowed(void) {
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_AUTO_DISABLE_AFTER_INACTIVITY)
     int64_t now = k_uptime_get();
-
     if (last_activity_ms > 0 &&
         now - last_activity_ms > CONFIG_WS2812_WIDGET_INACTIVITY_DISABLE_MS) {
         return false;
     }
 #endif
-
     return true;
 }
 
@@ -265,11 +243,9 @@ static bool indication_allowed(bool periodic) {
     if (!initialized || !widget_enabled || !activity_active) {
         return false;
     }
-
     if (periodic && !periodic_indication_allowed()) {
         return false;
     }
-
     return true;
 }
 
@@ -280,11 +256,9 @@ void ws2812_note_activity(void) {
 void ws2812_set_indication_enabled(bool enabled) {
     widget_enabled = enabled;
     ws2812_note_activity();
-
     if (!enabled && initialized) {
         set_all_pixels((struct led_rgb){0, 0, 0});
     }
-
     LOG_INF("WS2812 indications %s", enabled ? "enabled" : "disabled");
 }
 
@@ -294,20 +268,23 @@ void ws2812_toggle_indication_enabled(void) {
 
 static bool pause_underglow_if_needed(void) {
     bool was_on = false;
-
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_PAUSE_RGB_UNDERGLOW) && IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW)
     if (zmk_rgb_underglow_get_state(&was_on) == 0 && was_on) {
         zmk_rgb_underglow_off();
         k_sleep(K_MSEC(CONFIG_WS2812_WIDGET_UNDERGLOW_OFF_DELAY_MS));
     }
 #endif
-
     return was_on;
 }
 
+/* FIX #1: Restore persistent layers instead of blindly clearing all pixels */
 static void restore_underglow_if_needed(bool was_on) {
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_PAUSE_RGB_UNDERGLOW) && IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW)
     if (was_on) {
+        /* Restore persistent BEFORE turning underglow back on */
+        if (persistent_underglow_active) {
+            apply_persistent_layers();
+        }
         k_sleep(K_MSEC(CONFIG_WS2812_WIDGET_UNDERGLOW_RESTORE_DELAY_MS));
         zmk_rgb_underglow_on();
         return;
@@ -316,7 +293,12 @@ static void restore_underglow_if_needed(bool was_on) {
     ARG_UNUSED(was_on);
 #endif
 
-    set_all_pixels((struct led_rgb){0, 0, 0});
+    /* Underglow was not on — restore persistent or clear */
+    if (persistent_underglow_active) {
+        apply_persistent_layers();
+    } else {
+        set_all_pixels((struct led_rgb){0, 0, 0});
+    }
 }
 
 #if IS_ENABLED(CONFIG_ZMK_EXT_POWER)
@@ -327,34 +309,27 @@ static const struct device *get_ext_power_device(void) {
 
 static bool enable_ext_power_if_needed(void) {
     bool ext_power_was_on = true;
-
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_USE_EXT_POWER) && IS_ENABLED(CONFIG_ZMK_EXT_POWER)
     const struct device *ext_power = get_ext_power_device();
-
     if (ext_power == NULL) {
         LOG_WRN("EXT_POWER device not found");
         return true;
     }
-
     ext_power_was_on = ext_power_get(ext_power) > 0;
-
     if (!ext_power_was_on) {
         ext_power_enable(ext_power);
         k_sleep(K_MSEC(CONFIG_WS2812_WIDGET_EXT_POWER_STARTUP_DELAY_MS));
     }
 #endif
-
     return ext_power_was_on;
 }
 
 static void restore_ext_power_if_needed(bool ext_power_was_on, bool underglow_was_on) {
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_USE_EXT_POWER) && IS_ENABLED(CONFIG_ZMK_EXT_POWER)
     const struct device *ext_power = get_ext_power_device();
-
     if (ext_power == NULL) {
         return;
     }
-
     if (!ext_power_was_on && !underglow_was_on &&
         IS_ENABLED(CONFIG_WS2812_WIDGET_RESTORE_EXT_POWER_OFF)) {
         ext_power_disable(ext_power);
@@ -365,8 +340,9 @@ static void restore_ext_power_if_needed(bool ext_power_was_on, bool underglow_wa
 #endif
 }
 
+/* FIX #2: Removed duplicate apply_persistent_layers() call.
+ * Restoration is now handled inside restore_underglow_if_needed(). */
 static void execute_indicator_request(const struct indicator_request *request) {
-    /* Separator — просто пауза без подсветки, underglow не трогаем */
     if (request->kind == INDICATOR_KIND_SEPARATOR) {
         k_sleep(K_MSEC(request->hold_ms));
         return;
@@ -377,15 +353,12 @@ static void execute_indicator_request(const struct indicator_request *request) {
 
     for (uint8_t i = 0; i < request->repeat_count; i++) {
         fade_from_black_to_color(request->color, request->fade_in_ms);
-
         if (request->hold_ms > 0) {
             set_all_pixels(request->color);
             k_sleep(K_MSEC(request->hold_ms));
         }
-
         fade_from_color_to_black(request->color, request->fade_out_ms);
         set_all_pixels((struct led_rgb){0, 0, 0});
-
         if (i + 1 < request->repeat_count && request->gap_ms > 0) {
             k_sleep(K_MSEC(request->gap_ms));
         }
@@ -393,22 +366,15 @@ static void execute_indicator_request(const struct indicator_request *request) {
 
     restore_underglow_if_needed(underglow_was_on);
     restore_ext_power_if_needed(ext_power_was_on, underglow_was_on);
-
-    /* Restore persistent layer colors after temporary indication completes */
-    if (persistent_underglow_active) {
-        apply_persistent_layers();
-    }
 }
 
 static void enqueue_indicator(struct indicator_request request, bool periodic) {
     if (!periodic) {
         ws2812_note_activity();
     }
-
     if (!indication_allowed(periodic)) {
         return;
     }
-
     int rc = k_msgq_put(&indicator_msgq, &request, K_NO_WAIT);
     if (rc != 0) {
         LOG_WRN("WS2812 indicator queue full, dropping request kind %d", request.kind);
@@ -454,6 +420,11 @@ void ws2812_apply_layer_sync(bool enabled) {
 #endif
 }
 
+/* ========================================================================
+ * CENTRAL-ONLY: Explicit layer triggers → lsync debounce → blink
+ * Must stay central-only because it uses zmk_behavior_queue to trigger
+ * lsync which then enqueues blink indicators.
+ * ======================================================================== */
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE) &&                                      \
     (!IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL))
 
@@ -477,15 +448,12 @@ static bool layer_should_trigger(uint8_t layer) {
     if (layer == zmk_keymap_layer_default()) {
         return false;
     }
-
     if (any_explicit_layer_triggers_configured()) {
         return layer_is_explicit_trigger(layer);
     }
-
     if (layer >= 32) {
         return false;
     }
-
     return (CONFIG_WS2812_WIDGET_LAYER_INDICATOR_MASK & BIT(layer)) != 0;
 }
 
@@ -495,15 +463,13 @@ static bool pending_layer_valid;
 
 static void layer_indicator_work_cb(struct k_work *work) {
     ARG_UNUSED(work);
-
     if (!pending_layer_valid) {
         return;
     }
-
     bool state = pending_layer_state;
     pending_layer_valid = false;
 
-   struct zmk_behavior_binding binding = {
+    struct zmk_behavior_binding binding = {
         .behavior_dev = DEVICE_DT_NAME(DT_NODELABEL(ws2812_lsync)),
         .param1 = state ? 1 : 0,
         .param2 = 0,
@@ -512,33 +478,32 @@ static void layer_indicator_work_cb(struct k_work *work) {
         .position = 0,
         .timestamp = k_uptime_get(),
     };
-
     zmk_behavior_queue_add(&event, binding, true, 0);
     zmk_behavior_queue_add(&event, binding, false, 10);
 }
 
 static int layer_listener_cb(const zmk_event_t *eh) {
     const struct zmk_layer_state_changed *ev = as_zmk_layer_state_changed(eh);
-
     if (!initialized || ev == NULL || !layer_should_trigger(ev->layer)) {
         return 0;
     }
-
     pending_layer_state = ev->state;
     pending_layer_valid = true;
-
     k_work_reschedule(&layer_indicator_work, K_MSEC(CONFIG_WS2812_WIDGET_LAYER_DEBOUNCE_MS));
-
     return 0;
 }
 
 ZMK_LISTENER(ws2812_layer_listener, layer_listener_cb);
 ZMK_SUBSCRIPTION(ws2812_layer_listener, zmk_layer_state_changed);
 
+#endif /* CENTRAL-ONLY explicit triggers */
+
 /* ========================================================================
- * PERSISTENT LAYER STATE LISTENER
- * Handles instant ON/OFF of persistent layer colors without queue/animation
+ * PERSISTENT LAYER STATE LISTENER — BOTH HALVES
+ * No SPLIT_ROLE_CENTRAL guard. Each half has its own pixels[] and led_strip.
+ * Handles instant ON/OFF of persistent layer colors without queue/animation.
  * ======================================================================== */
+#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE)
 
 static int persistent_layer_listener_cb(const zmk_event_t *eh) {
     const struct zmk_layer_state_changed *ev = as_zmk_layer_state_changed(eh);
@@ -554,7 +519,6 @@ static int persistent_layer_listener_cb(const zmk_event_t *eh) {
 
         if (persistent_layers[i].layer == ev->layer) {
             if (ev->state) {
-                /* Layer activated — turn ON persistent color */
                 set_pixel_range(persistent_layers[i].color,
                                 persistent_layers[i].start_pixel,
                                 persistent_layers[i].num_pixels);
@@ -562,13 +526,11 @@ static int persistent_layer_listener_cb(const zmk_event_t *eh) {
                 persistent_underglow_active = true;
                 LOG_DBG("Persistent layer %d ON", ev->layer);
             } else {
-                /* Layer deactivated — turn OFF persistent color */
                 clear_pixel_range(persistent_layers[i].start_pixel,
                                   persistent_layers[i].num_pixels);
                 persistent_layers[i].active = false;
                 LOG_DBG("Persistent layer %d OFF", ev->layer);
 
-                /* Check if any other persistent layers remain active */
                 persistent_underglow_active = false;
                 for (int j = 0; j < MAX_PERSISTENT_LAYERS; j++) {
                     if (persistent_layers[j].configured && persistent_layers[j].active) {
@@ -586,40 +548,26 @@ static int persistent_layer_listener_cb(const zmk_event_t *eh) {
 ZMK_LISTENER(ws2812_persistent_layer_listener, persistent_layer_listener_cb);
 ZMK_SUBSCRIPTION(ws2812_persistent_layer_listener, zmk_layer_state_changed);
 
-#endif /* CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE && (central or non-split) */
+#endif /* PERSISTENT LAYER — both halves */
 
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY)
 
 static struct led_rgb get_battery_status_color(uint8_t battery_level) {
-    /*
-     * 5-zone colour map:
-     *   0%                          -> off (not connected / unknown)
-     *   1 .. CRITICAL               -> CRITICAL  (default red)
-     *   CRITICAL+1 .. LOW           -> LOW       (default orange)
-     *   LOW+1 .. HIGH-1             -> MEDIUM    (default yellow)
-     *   HIGH .. FULL-1              -> HIGH      (default green)
-     *   FULL .. 100                 -> FULL      (default cyan)
-     */
     if (battery_level == 0) {
         return hex_to_rgb(CONFIG_WS2812_WIDGET_COLOR_OFF);
     }
-
     if (battery_level <= CONFIG_WS2812_WIDGET_BATTERY_LEVEL_CRITICAL) {
         return hex_to_rgb(CONFIG_WS2812_WIDGET_BATTERY_COLOR_CRITICAL);
     }
-
     if (battery_level <= CONFIG_WS2812_WIDGET_BATTERY_LEVEL_LOW) {
         return hex_to_rgb(CONFIG_WS2812_WIDGET_BATTERY_COLOR_LOW);
     }
-
     if (battery_level >= CONFIG_WS2812_WIDGET_BATTERY_LEVEL_FULL) {
         return hex_to_rgb(CONFIG_WS2812_WIDGET_BATTERY_COLOR_FULL);
     }
-
     if (battery_level >= CONFIG_WS2812_WIDGET_BATTERY_LEVEL_HIGH) {
         return hex_to_rgb(CONFIG_WS2812_WIDGET_BATTERY_COLOR_HIGH);
     }
-
     return hex_to_rgb(CONFIG_WS2812_WIDGET_BATTERY_COLOR_MEDIUM);
 }
 
@@ -639,12 +587,10 @@ static struct indicator_request make_battery_request(struct led_rgb color, uint8
 void ws2812_indicate_battery(void) {
     uint8_t battery_level = zmk_battery_state_of_charge();
     int retry = 0;
-
     while (battery_level == 0 && retry++ < 10) {
         k_sleep(K_MSEC(100));
         battery_level = zmk_battery_state_of_charge();
     }
-
     enqueue_indicator(make_battery_request(get_battery_status_color(battery_level),
                                            CONFIG_WS2812_WIDGET_BATTERY_BLINK_REPEAT,
                                            INDICATOR_KIND_BATTERY_MANUAL),
@@ -652,47 +598,32 @@ void ws2812_indicate_battery(void) {
 }
 
 void ws2812_indicate_battery_both(void) {
-    /*
-     * Показываем батарею обеих половин последовательно:
-     *   1) левая (центральная): 2 вспышки цветом своего заряда
-     *   2) пауза — белая вспышка-разделитель
-     *   3) правая (периферийная): 2 вспышки цветом её заряда
-     *
-     * На периферийной сборке — просто показываем свою батарею.
-     */
 #if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL) && \
     IS_ENABLED(CONFIG_ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING)
-
-    /* --- Левая половина --- */
     uint8_t local_level = zmk_battery_state_of_charge();
     int retry = 0;
     while (local_level == 0 && retry++ < 10) {
         k_sleep(K_MSEC(100));
         local_level = zmk_battery_state_of_charge();
     }
-
     enqueue_indicator(
         make_battery_request(get_battery_status_color(local_level),
                              CONFIG_WS2812_WIDGET_BATTERY_BOTH_LEFT_REPEAT,
                              INDICATOR_KIND_BATTERY_MANUAL),
         false);
 
-    /* --- Разделитель: пауза между половинами --- */
     struct indicator_request sep = {
         .kind     = INDICATOR_KIND_SEPARATOR,
         .hold_ms  = CONFIG_WS2812_WIDGET_BATTERY_BOTH_SEPARATOR_MS,
     };
     enqueue_indicator(sep, false);
 
-    /* --- Правая половина --- */
     enqueue_indicator(
         make_battery_request(get_battery_status_color(peripheral_battery_level),
                              CONFIG_WS2812_WIDGET_BATTERY_BOTH_RIGHT_REPEAT,
                              INDICATOR_KIND_BATTERY_MANUAL),
         false);
-
 #else
-    /* Периферия или несплит — показываем только себя */
     ws2812_indicate_battery();
 #endif
 }
@@ -706,25 +637,19 @@ static void schedule_next_battery_reminder(void) {
 
 static void battery_reminder_work_cb(struct k_work *work) {
     ARG_UNUSED(work);
-
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_BATTERY_REMINDER)
     int64_t now = k_uptime_get();
-
     if (last_layer_indication_ms > 0 &&
         now - last_layer_indication_ms < CONFIG_WS2812_WIDGET_BATTERY_COOLDOWN_AFTER_LAYER_MS) {
         schedule_next_battery_reminder();
         return;
     }
-
     if (indication_allowed(true)) {
         uint8_t battery_level = zmk_battery_state_of_charge();
-
         bool should_show = battery_level > 0;
-
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_BATTERY_REMINDER_ONLY_CRITICAL)
         should_show = should_show && battery_level <= CONFIG_WS2812_WIDGET_BATTERY_LEVEL_CRITICAL;
 #endif
-
         if (should_show) {
             enqueue_indicator(make_battery_request(hex_to_rgb(CONFIG_WS2812_WIDGET_BATTERY_REMINDER_COLOR),
                                                    CONFIG_WS2812_WIDGET_BATTERY_REMINDER_REPEAT_COUNT,
@@ -733,28 +658,15 @@ static void battery_reminder_work_cb(struct k_work *work) {
         }
     }
 #endif
-
     schedule_next_battery_reminder();
 }
 
 #if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING)
 static int battery_listener_cb(const zmk_event_t *eh) {
     const struct zmk_battery_state_changed *ev = as_zmk_battery_state_changed(eh);
-
     if (!initialized || ev == NULL) {
         return 0;
     }
-
-    /*
-     * Кэшируем заряд периферии.
-     * В ZMK v0.3.0 структура zmk_battery_state_changed не имеет поля source.
-     * Периферийные события приходят ТОЛЬКО когда включён
-     * CONFIG_ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING.
-     * Определяем источник так: если значение отличается от текущего локального
-     * заряда И локальный заряд уже известен — это событие от периферии.
-     * Иначе обновляем кэш периферии напрямую каждый раз когда приходит
-     * значение, отличное от локального.
-     */
 #if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL) && \
     IS_ENABLED(CONFIG_ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING)
     {
@@ -765,7 +677,6 @@ static int battery_listener_cb(const zmk_event_t *eh) {
         }
     }
 #endif
-
     if (ev->state_of_charge > 0 &&
         ev->state_of_charge <= CONFIG_WS2812_WIDGET_BATTERY_LEVEL_CRITICAL) {
         enqueue_indicator(make_battery_request(hex_to_rgb(CONFIG_WS2812_WIDGET_BATTERY_COLOR_CRITICAL),
@@ -773,7 +684,6 @@ static int battery_listener_cb(const zmk_event_t *eh) {
                                                INDICATOR_KIND_BATTERY_CRITICAL),
                           false);
     }
-
     return 0;
 }
 
@@ -796,11 +706,11 @@ void ws2812_indicate_connectivity(void) {
         .gap_ms = CONFIG_WS2812_WIDGET_INTERVAL_MS,
         .repeat_count = 1,
     };
-
     enqueue_indicator(request, false);
 #endif
 }
 
+/* FIX #3: Restore persistent layers on wake from sleep */
 static int activity_listener_cb(const zmk_event_t *eh) {
     const struct zmk_activity_state_changed *ev = as_zmk_activity_state_changed(eh);
 
@@ -811,6 +721,10 @@ static int activity_listener_cb(const zmk_event_t *eh) {
     if (ev->state == ZMK_ACTIVITY_ACTIVE) {
         activity_active = true;
         ws2812_note_activity();
+        /* Restore persistent layers on wake */
+        if (initialized && persistent_underglow_active) {
+            apply_persistent_layers();
+        }
     } else if (ev->state == ZMK_ACTIVITY_SLEEP) {
         activity_active = false;
         set_all_pixels((struct led_rgb){0, 0, 0});
@@ -838,10 +752,8 @@ static void indicator_process_thread(void *d0, void *d1, void *d2) {
 
     while (true) {
         struct indicator_request request;
-
         k_msgq_get(&indicator_msgq, &request, K_FOREVER);
         execute_indicator_request(&request);
-
         if (CONFIG_WS2812_WIDGET_INTERVAL_MS > 0) {
             k_sleep(K_MSEC(CONFIG_WS2812_WIDGET_INTERVAL_MS));
         }
@@ -863,7 +775,6 @@ static void indicator_init_thread(void *d0, void *d1, void *d2) {
 
     initialized = true;
     ws2812_note_activity();
-
     set_all_pixels((struct led_rgb){0, 0, 0});
 
     LOG_INF("WS2812 temporary indicator initialized with %d pixels", WS2812_NUM_PIXELS);
@@ -875,7 +786,6 @@ static void indicator_init_thread(void *d0, void *d1, void *d2) {
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY_ON_START)
     ws2812_indicate_battery();
 #endif
-
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_BATTERY_REMINDER)
     schedule_next_battery_reminder();
 #endif
