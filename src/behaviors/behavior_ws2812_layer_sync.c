@@ -10,6 +10,7 @@
 #include <zephyr/device.h>
 #include <zephyr/logging/log.h>
 #include <zmk_ws2812_widget/widget.h>
+#include <drivers/behavior.h>
 
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
@@ -50,5 +51,3 @@ static const struct zmk_behavior_driver_api behavior_ws2812_layer_sync_driver_ap
 DEVICE_DT_INST_DEFINE(0, behavior_ws2812_layer_sync_init, NULL, NULL, NULL,
                       APPLICATION, CONFIG_KERNEL_INIT_PRIORITY_DEFAULT,
                       &behavior_ws2812_layer_sync_driver_api);
-
-#include <drivers/behavior.h>
