@@ -44,15 +44,3 @@ void ws2812_indicate_layer(void);
  * @brief Apply layer-sync color locally. Safe to call on both central and peripheral.
  */
 void ws2812_apply_layer_sync(bool enabled);
-
-// В конец файла zmk_ws2812_widget/widget.h добавить:
-
-/**
- * @brief Установить постоянную подсветку для указанного слоя
- * @param layer Номер слоя
- * @param color_hex Цвет в формате 0xRRGGBB
- * @param start_pixel Начальный индекс пикселя
- * @param num_pixels Количество пикселей
- */
-void ws2812_set_persistent_layer_color(uint8_t layer, uint32_t color_hex, 
-                                       uint8_t start_pixel, uint8_t num_pixels);
