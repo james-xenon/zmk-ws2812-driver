@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 #include <zephyr/kernel.h>
 
 /**
@@ -44,6 +45,19 @@ void ws2812_indicate_layer(void);
  * @brief Apply layer-sync color locally. Safe to call on both central and peripheral.
  */
 void ws2812_apply_layer_sync(bool enabled);
+
+/**
+ * @brief Assign a persistent color to a layer on THIS half of the keyboard.
+ *
+ * @param layer       Layer number.
+ * @param color_hex   0xRRGGBB.
+ * @param start_pixel First LED index ON THIS HALF. Индексы всегда начинаются
+ *                    с 0 на каждой половине — сквозной нумерации между
+ *                    половинами не существует.
+ * @param num_pixels  Number of LEDs to light, starting at start_pixel.
+ */
+void ws2812_set_persistent_layer_color(uint8_t layer, uint32_t color_hex,
+                                       uint8_t start_pixel, uint8_t num_pixels);
 
 /**
  * @brief Activate or deactivate a persistent layer by layer number.

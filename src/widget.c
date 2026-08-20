@@ -29,11 +29,37 @@
 #include <drivers/ext_power.h>
 #endif
 
-/* layer_state_changed нужен ТОЛЬКО на central или non-split */
-#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE) && \
-	(!IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL))
-#include <zmk/events/layer_state_changed.h>
-#include <zmk/keymap.h>
+/* ========================================================================
+ * КАКАЯ ЭТО ПОЛОВИНА
+ *
+ * ВАЖНО: у сплита каждая половина — отдельный МК со своей лентой.
+ * Прошивка собирается для каждой половины отдельно, и индексы пикселей
+ * на каждой половине ВСЕГДА начинаются с нуля. Сквозной нумерации
+ * "0..20 = левая, 21..41 = правая" НЕ СУЩЕСТВУЕТ.
+ * Выбор половины делается ТОЛЬКО на этапе компиляции, вот здесь.
+ *
+ * В этом шилде (Kconfig.defconfig) central = ЛЕВАЯ половина.
+ * ======================================================================== */
+#if !IS_ENABLED(CONFIG_ZMK_SPLIT)
+	#define WS2812_HALF_IS_LEFT 1
+	#define WS2812_HALF_IS_RIGHT 1
+#elif IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+	#define WS2812_HALF_IS_LEFT 1
+	#define WS2812_HALF_IS_RIGHT 0
+#else
+	#define WS2812_HALF_IS_LEFT 0
+	#define WS2812_HALF_IS_RIGHT 1
+#endif
+
+/* События слоёв существуют только на central (или на не-сплите).
+ * Peripheral о слоях не знает вообще, ему состояние присылает central
+ * через поведение ws2812_lsync (BEHAVIOR_LOCALITY_GLOBAL). */
+#if !IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+	#define WS2812_HAS_LAYER_EVENTS 1
+	#include <zmk/events/layer_state_changed.h>
+	#include <zmk/keymap.h>
+#else
+	#define WS2812_HAS_LAYER_EVENTS 0
 #endif
 
 #include <zmk_ws2812_widget/widget.h>
@@ -50,6 +76,31 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 BUILD_ASSERT(CONFIG_WS2812_WIDGET_FADE_STEP_MS > 0,
 			 "CONFIG_WS2812_WIDGET_FADE_STEP_MS must be greater than zero");
+
+BUILD_ASSERT(WS2812_NUM_PIXELS > 0 && WS2812_NUM_PIXELS <= 255,
+			 "chain-length must be the number of LEDs on THIS half (1..255)");
+
+/* ========================================================================
+ * НАСТРОЙКА PERSISTENT-ЦВЕТОВ СЛОЁВ
+ *
+ * Слой светит на той половине, для которой он здесь объявлен.
+ * Диапазон пикселей всегда 0..WS2812_NUM_PIXELS-1 — вся лента этой половины.
+ * ======================================================================== */
+
+/* Слой 3 (numb_layer) — светится ЛЕВАЯ половина */
+#define PERSISTENT_LAYER_LEFT 3
+/* Слой 2 (symb_layer) — светится ПРАВАЯ половина */
+#define PERSISTENT_LAYER_RIGHT 2
+/* Цвет */
+#define PERSISTENT_LAYER_COLOR 0x00FFFF
+
+/* Полный список persistent-слоёв. Central рассылает состояние
+ * ИМЕННО этих слоёв на peripheral. Список обязан быть одинаковым
+ * в обеих сборках, поэтому он объявлен вне #if по половинам. */
+static const uint8_t __maybe_unused persistent_sync_layers[] = {
+	PERSISTENT_LAYER_LEFT,
+	PERSISTENT_LAYER_RIGHT,
+};
 
 enum indicator_kind {
 	INDICATOR_KIND_MANUAL_LAYER,
@@ -126,8 +177,8 @@ static int set_all_pixels(struct led_rgb color) {
 }
 
 static int set_pixel_range(struct led_rgb color, uint8_t start, uint8_t count) {
-	uint8_t end = MIN((uint16_t)start + count, WS2812_NUM_PIXELS);
-	for (uint8_t i = start; i < end; i++) {
+	uint16_t end = MIN((uint16_t)start + count, WS2812_NUM_PIXELS);
+	for (uint16_t i = start; i < end; i++) {
 		pixels[i] = color;
 	}
 	return led_strip_update_rgb(led_strip, pixels, WS2812_NUM_PIXELS);
@@ -150,6 +201,13 @@ static void apply_persistent_layers(void) {
 	persistent_underglow_active = any_active;
 }
 
+static bool any_persistent_layer_active(void) {
+	for (int i = 0; i < MAX_PERSISTENT_LAYERS; i++) {
+		if (persistent_layers[i].configured && persistent_layers[i].active) return true;
+	}
+	return false;
+}
+
 void ws2812_set_persistent_layer_color(uint8_t layer, uint32_t color_hex,
 	uint8_t start_pixel, uint8_t num_pixels) {
 
@@ -169,6 +227,12 @@ void ws2812_set_persistent_layer_color(uint8_t layer, uint32_t color_hex,
 		return;
 	}
 
+	if (start_pixel >= WS2812_NUM_PIXELS) {
+		LOG_ERR("Persistent layer %d: start_pixel %d is outside this half (0..%d)",
+			layer, start_pixel, WS2812_NUM_PIXELS - 1);
+		return;
+	}
+
 	persistent_layers[slot].layer = layer;
 	persistent_layers[slot].color = hex_to_rgb(color_hex);
 	persistent_layers[slot].start_pixel = start_pixel;
@@ -177,7 +241,8 @@ void ws2812_set_persistent_layer_color(uint8_t layer, uint32_t color_hex,
 	persistent_layers[slot].active = false;
 
 	LOG_INF("Persistent layer %d configured: color=0x%06X pixels=%d-%d",
-		layer, color_hex, start_pixel, start_pixel + num_pixels - 1);
+		layer, color_hex, start_pixel,
+		MIN((uint16_t)start_pixel + num_pixels, WS2812_NUM_PIXELS) - 1);
 }
 
 /* ========================================================================
@@ -196,37 +261,41 @@ static void restore_ext_power_if_needed(bool ext_power_was_on, bool underglow_wa
  * Uses device_is_ready instead of initialized flag because on peripheral
  * the init thread may not have completed when lsync is first called. */
 void ws2812_set_persistent_layer_active(uint8_t layer, bool active) {
-	if (!device_is_ready(led_strip)) return;
-
 	for (int i = 0; i < MAX_PERSISTENT_LAYERS; i++) {
 		if (!persistent_layers[i].configured) continue;
 		if (persistent_layers[i].layer != layer) continue;
 
 		bool was_active = persistent_layers[i].active;
+		bool any_before = any_persistent_layer_active();
+
+		/* Состояние запоминаем всегда, даже если лента ещё не поднялась.
+		 * Init-поток докрасит её в конце инициализации. */
 		persistent_layers[i].active = active;
 
-		if (active && !was_active) {
-			persistent_underglow_was_on = pause_underglow_if_needed();
-			persistent_ext_power_was_on = enable_ext_power_if_needed();
+		if (!device_is_ready(led_strip)) return;
+		if (active == was_active) return;
+
+		if (active) {
+			/* Сохраняем состояние underglow/ext-power только при переходе
+			 * "ни одного слоя не активно" -> "есть активный". Иначе второй
+			 * слой затрёт сохранённое значение нулём и underglow не вернётся. */
+			if (!any_before) {
+				persistent_underglow_was_on = pause_underglow_if_needed();
+				persistent_ext_power_was_on = enable_ext_power_if_needed();
+			}
 			apply_persistent_layers();
-		} else if (!active && was_active) {
+		} else {
 			clear_pixel_range(persistent_layers[i].start_pixel,
 			                  persistent_layers[i].num_pixels);
 
-			/* Check if any other persistent layers are still active */
-			bool any_still_active = false;
-			for (int j = 0; j < MAX_PERSISTENT_LAYERS; j++) {
-				if (persistent_layers[j].configured && persistent_layers[j].active) {
-					any_still_active = true;
-					break;
-				}
-			}
+			bool any_still_active = any_persistent_layer_active();
 			persistent_underglow_active = any_still_active;
 
 			if (!any_still_active) {
 				restore_underglow_if_needed(persistent_underglow_was_on);
 				restore_ext_power_if_needed(persistent_ext_power_was_on,
 				                            persistent_underglow_was_on);
+				persistent_underglow_was_on = false;
 			}
 		}
 		return;
@@ -294,7 +363,7 @@ void ws2812_note_activity(void) { last_activity_ms = k_uptime_get(); }
 void ws2812_set_indication_enabled(bool enabled) {
 	widget_enabled = enabled;
 	ws2812_note_activity();
-	if (!enabled && initialized) set_all_pixels((struct led_rgb){0,0,0});
+	if (!enabled && initialized) set_all_pixels((struct led_rgb){0, 0, 0});
 	LOG_INF("WS2812 indications %s", enabled ? "enabled" : "disabled");
 }
 
@@ -325,7 +394,7 @@ static void restore_underglow_if_needed(bool was_on) {
 	ARG_UNUSED(was_on);
 #endif
 	if (persistent_underglow_active) apply_persistent_layers();
-	else set_all_pixels((struct led_rgb){0,0,0});
+	else set_all_pixels((struct led_rgb){0, 0, 0});
 }
 
 #if IS_ENABLED(CONFIG_ZMK_EXT_POWER)
@@ -435,10 +504,9 @@ void ws2812_apply_layer_sync(bool enabled) {
 }
 
 /* ========================================================================
- * CENTRAL-ONLY: layer listeners (explicit triggers + persistent)
+ * CENTRAL-ONLY: временная индикация смены слоя (мигание)
  * ======================================================================== */
-#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE) && \
-	(!IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL))
+#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE) && WS2812_HAS_LAYER_EVENTS
 
 static bool layer_is_explicit_trigger(uint8_t layer) {
 	return (CONFIG_WS2812_WIDGET_LAYER_TRIGGER_0 >= 0 &&
@@ -501,28 +569,81 @@ static int layer_listener_cb(const zmk_event_t *eh) {
 ZMK_LISTENER(ws2812_layer_listener, layer_listener_cb);
 ZMK_SUBSCRIPTION(ws2812_layer_listener, zmk_layer_state_changed);
 
-/* Persistent layer listener — only on central, receives layer_state_changed events */
+#endif /* временная индикация смены слоя */
+
+/* ========================================================================
+ * CENTRAL-ONLY: persistent-слои
+ * Слушаем события слоёв локально И рассылаем состояние на peripheral,
+ * потому что peripheral сам о слоях ничего не знает.
+ * ======================================================================== */
+#if WS2812_HAS_LAYER_EVENTS
+
+#if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+
+#if !DT_NODE_EXISTS(DT_NODELABEL(ws2812_lsync))
+#error "ws2812_lsync behavior node not found: add #include <behaviors/ws2812_layer_sync.dtsi> to the keymap"
+#endif
+
+static bool layer_needs_peripheral_sync(uint8_t layer) {
+	for (size_t i = 0; i < ARRAY_SIZE(persistent_sync_layers); i++) {
+		if (persistent_sync_layers[i] == layer) return true;
+	}
+	return false;
+}
+
+/* Отправляем состояние слоя на все peripheral-половины.
+ * ws2812_lsync объявлено с BEHAVIOR_LOCALITY_GLOBAL, поэтому ZMK
+ * прогоняет его локально и ретранслирует на каждую peripheral-половину.
+ * param1 = номер слоя, param2 = 1 (включён) / 0 (выключен).
+ * Состояние передаётся в параметре, а не через press/release, чтобы
+ * потерянный BLE-пакет чинился следующим переключением слоя. */
+static void forward_persistent_layer(uint8_t layer, bool state) {
+	struct zmk_behavior_binding binding = {
+		.behavior_dev = DEVICE_DT_NAME(DT_NODELABEL(ws2812_lsync)),
+		.param1 = layer,
+		.param2 = state ? 1 : 0,
+	};
+	struct zmk_behavior_binding_event event = {
+		.position = 0,
+		.timestamp = k_uptime_get(),
+	};
+
+	zmk_behavior_queue_add(&event, binding, true, 0);
+	zmk_behavior_queue_add(&event, binding, false, 10);
+}
+
+#endif /* split central */
+
 static int persistent_layer_listener_cb(const zmk_event_t *eh) {
 	const struct zmk_layer_state_changed *ev = as_zmk_layer_state_changed(eh);
-	if (!initialized || ev == NULL) return 0;
+	if (ev == NULL) return 0;
+
+#if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+	/* Рассылку делаем ДО проверки initialized и независимо от того,
+	 * настроен ли этот слой локально: слой 2 светит на правой половине,
+	 * и у левой сборки для него слота нет вообще. */
+	if (layer_needs_peripheral_sync(ev->layer)) {
+		forward_persistent_layer(ev->layer, ev->state);
+	}
+#endif
+
+	if (!initialized) return 0;
 
 	bool any_active_before = persistent_underglow_active;
+	bool touched = false;
 
 	for (int i = 0; i < MAX_PERSISTENT_LAYERS; i++) {
 		if (!persistent_layers[i].configured) continue;
 
 		if (persistent_layers[i].layer == ev->layer) {
 			persistent_layers[i].active = ev->state;
+			touched = true;
 		}
 	}
 
-	bool any_active_now = false;
-	for (int i = 0; i < MAX_PERSISTENT_LAYERS; i++) {
-		if (persistent_layers[i].configured && persistent_layers[i].active) {
-			any_active_now = true;
-			break;
-		}
-	}
+	if (!touched) return 0;
+
+	bool any_active_now = any_persistent_layer_active();
 	persistent_underglow_active = any_active_now;
 
 	if (any_active_now && !any_active_before) {
@@ -563,7 +684,7 @@ static int persistent_layer_listener_cb(const zmk_event_t *eh) {
 ZMK_LISTENER(ws2812_persistent_layer_listener, persistent_layer_listener_cb);
 ZMK_SUBSCRIPTION(ws2812_persistent_layer_listener, zmk_layer_state_changed);
 
-#endif /* CENTRAL-ONLY: layer listeners */
+#endif /* WS2812_HAS_LAYER_EVENTS */
 
 /* ========================================================================
  * BATTERY
@@ -747,8 +868,7 @@ ZMK_SUBSCRIPTION(ws2812_activity_listener, zmk_activity_state_changed);
 static void indicator_process_thread(void *d0, void *d1, void *d2) {
 	ARG_UNUSED(d0); ARG_UNUSED(d1); ARG_UNUSED(d2);
 
-#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE) && \
-	(!IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL))
+#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE) && WS2812_HAS_LAYER_EVENTS
 	k_work_init_delayable(&layer_indicator_work, layer_indicator_work_cb);
 #endif
 
@@ -776,22 +896,32 @@ static void indicator_init_thread(void *d0, void *d1, void *d2) {
 		return;
 	}
 
+	/* Настраиваем persistent-слои ДО initialized, чтобы lsync,
+	 * прилетевший от central на старте, попал в уже готовый слот. */
+#if WS2812_HALF_IS_LEFT
+	/* ЛЕВАЯ половина: слой 3 (numb_layer) — вся её лента */
+	ws2812_set_persistent_layer_color(PERSISTENT_LAYER_LEFT, PERSISTENT_LAYER_COLOR,
+		0, WS2812_NUM_PIXELS);
+#endif
+#if WS2812_HALF_IS_RIGHT
+	/* ПРАВАЯ половина: слой 2 (symb_layer) — вся её лента */
+	ws2812_set_persistent_layer_color(PERSISTENT_LAYER_RIGHT, PERSISTENT_LAYER_COLOR,
+		0, WS2812_NUM_PIXELS);
+#endif
+
 	initialized = true;
 	ws2812_note_activity();
-	set_all_pixels((struct led_rgb){0,0,0});
-	LOG_INF("WS2812 temporary indicator initialized with %d pixels", WS2812_NUM_PIXELS);
 
-	/* Persistent cyan на слое 2 (symb_layer), правая половина (пиксели 21-41) */
-	ws2812_set_persistent_layer_color(2, 0x00FFFF, 21, 21);
+	if (any_persistent_layer_active()) {
+		persistent_underglow_was_on = pause_underglow_if_needed();
+		persistent_ext_power_was_on = enable_ext_power_if_needed();
+		apply_persistent_layers();
+	} else {
+		set_all_pixels((struct led_rgb){0,0,0});
+	}
 
-	/* Persistent cyan на слое 3 (numb_layer), левая половина (пиксели 0-20) */
-	ws2812_set_persistent_layer_color(3, 0x00FFFF, 0, 21);
-
-	/* Persistent black на слое 15 (symbnolight_layer), вся лента (выключает подсветку) */
-	//ws2812_set_persistent_layer_color(15, 0x000000, 0, 42);
-
-	/* Persistent black на слое 16 (numbnolight_layer), вся лента (выключает подсветку) */
-	//ws2812_set_persistent_layer_color(16, 0x000000, 0, 42);
+	LOG_INF("WS2812 temporary indicator initialized with %d pixels (half: %s)",
+		WS2812_NUM_PIXELS, WS2812_HALF_IS_LEFT ? "left/central" : "right/peripheral");
 
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY)
 	#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY_ON_START)

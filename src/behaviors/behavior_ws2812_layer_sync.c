@@ -21,13 +21,20 @@ static int __maybe_unused behavior_ws2812_lsync_init(const struct device *dev) {
  * param1 semantics:
  *   0         = legacy layer OFF blink (white->red fade)
  *   1         = legacy layer ON blink (white fade)
- *   2..255    = activate/deactivate persistent layer color for that layer number
+ *   2..255    = persistent layer number; param2 carries the state
+ *               (1 = layer active, 0 = layer inactive)
+ *
+ * Состояние передаётся ПАРАМЕТРОМ, а не через press/release.
+ * Раньше это ломалось: макрос делает tap (нажатие + отпускание подряд),
+ * поэтому слой включался и тут же выключался.
+ * param1 >= 2 генерирует сам драйвер (widget.c), в кеймапе руками
+ * прописывать не нужно — только legacy-варианты 0 и 1.
  */
 static int on_keymap_binding_pressed(struct zmk_behavior_binding *binding,
                                      struct zmk_behavior_binding_event event) {
     if (binding->param1 >= 2) {
-        /* param1 is a persistent layer number */
-        ws2812_set_persistent_layer_active(binding->param1, true);
+        /* param1 is a persistent layer number, param2 is its state */
+        ws2812_set_persistent_layer_active((uint8_t)binding->param1, binding->param2 != 0);
     } else {
         /* Legacy behavior: 0 = off blink, 1 = on blink */
         ws2812_apply_layer_sync(binding->param1 != 0);
@@ -37,11 +44,8 @@ static int on_keymap_binding_pressed(struct zmk_behavior_binding *binding,
 
 static int on_keymap_binding_released(struct zmk_behavior_binding *binding,
                                       struct zmk_behavior_binding_event event) {
-    if (binding->param1 >= 2) {
-        /* Deactivate persistent layer on release */
-        ws2812_set_persistent_layer_active(binding->param1, false);
-    }
-    /* Legacy: nothing on release (blink already finished) */
+    /* Ничего не делаем: и persistent-состояние, и legacy-мигание
+     * полностью отрабатываются на нажатии. */
     return ZMK_BEHAVIOR_OPAQUE;
 }
 
