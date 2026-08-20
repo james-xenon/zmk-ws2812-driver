@@ -29,13 +29,10 @@
 #include <drivers/ext_power.h>
 #endif
 
-/* layer_state_changed нужен на ВСЕХ половинах для persistent colors */
-#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE)
-#include <zmk/events/layer_state_changed.h>
-#endif
-/* keymap.h нужен только на central для layer_default() */
+/* layer_state_changed нужен ТОЛЬКО на central или non-split */
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE) && \
 	(!IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL))
+#include <zmk/events/layer_state_changed.h>
 #include <zmk/keymap.h>
 #endif
 
@@ -190,13 +187,14 @@ static bool pause_underglow_if_needed(void);
 static bool enable_ext_power_if_needed(void);
 static void restore_underglow_if_needed(bool was_on);
 static void restore_ext_power_if_needed(bool ext_power_was_on, bool underglow_was_on);
-
 /* ========================================================================
  * END FORWARD DECLARATIONS
  * ======================================================================== */
 
 /* Activate or deactivate a persistent layer by layer number.
- * Called from ws2812_lsync behavior (GLOBAL locality) so it works on peripheral. */
+ * Called from ws2812_lsync behavior (GLOBAL locality) so it works on peripheral.
+ * Uses device_is_ready instead of initialized flag because on peripheral
+ * the init thread may not have completed when lsync is first called. */
 void ws2812_set_persistent_layer_active(uint8_t layer, bool active) {
 	if (!device_is_ready(led_strip)) return;
 
@@ -503,13 +501,7 @@ static int layer_listener_cb(const zmk_event_t *eh) {
 ZMK_LISTENER(ws2812_layer_listener, layer_listener_cb);
 ZMK_SUBSCRIPTION(ws2812_layer_listener, zmk_layer_state_changed);
 
-#endif /* CENTRAL-ONLY: layer blink listeners */
-
-/* ========================================================================
- * PERSISTENT LAYER LISTENER — работает на ВСЕХ половинах (central + peripheral)
- * ======================================================================== */
-#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE)
-
+/* Persistent layer listener — only on central, receives layer_state_changed events */
 static int persistent_layer_listener_cb(const zmk_event_t *eh) {
 	const struct zmk_layer_state_changed *ev = as_zmk_layer_state_changed(eh);
 	if (!initialized || ev == NULL) return 0;
@@ -571,7 +563,7 @@ static int persistent_layer_listener_cb(const zmk_event_t *eh) {
 ZMK_LISTENER(ws2812_persistent_layer_listener, persistent_layer_listener_cb);
 ZMK_SUBSCRIPTION(ws2812_persistent_layer_listener, zmk_layer_state_changed);
 
-#endif /* SHOW_LAYER_CHANGE: persistent layer listeners */
+#endif /* CENTRAL-ONLY: layer listeners */
 
 /* ========================================================================
  * BATTERY
