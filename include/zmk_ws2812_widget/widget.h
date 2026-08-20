@@ -44,3 +44,9 @@ void ws2812_indicate_layer(void);
  * @brief Apply layer-sync color locally. Safe to call on both central and peripheral.
  */
 void ws2812_apply_layer_sync(bool enabled);
+
+/**
+ * @brief Activate or deactivate a persistent layer by layer number.
+ *        Uses GLOBAL locality via ws2812_lsync behavior so it works on peripheral too.
+ */
+void ws2812_set_persistent_layer_active(uint8_t layer, bool active);

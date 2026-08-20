@@ -195,7 +195,7 @@ static void restore_ext_power_if_needed(bool ext_power_was_on, bool underglow_wa
 /* Activate or deactivate a persistent layer by layer number.
  * Called from ws2812_lsync behavior (GLOBAL locality) so it works on peripheral. */
 void ws2812_set_persistent_layer_active(uint8_t layer, bool active) {
-	if (!initialized) return;
+	if (!device_is_ready(led_strip)) return;
 
 	for (int i = 0; i < MAX_PERSISTENT_LAYERS; i++) {
 		if (!persistent_layers[i].configured) continue;
