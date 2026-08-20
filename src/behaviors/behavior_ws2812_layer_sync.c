@@ -17,16 +17,31 @@ static int __maybe_unused behavior_ws2812_lsync_init(const struct device *dev) {
 /*
  * This behavior is marked GLOBAL locality, so ZMK automatically
  * runs it on the central AND every peripheral half of a split keyboard.
- * param1: 1 = layer ON color, 0 = layer OFF color
+ *
+ * param1 semantics:
+ *   0         = legacy layer OFF blink (white->red fade)
+ *   1         = legacy layer ON blink (white fade)
+ *   2..255    = CHANGED: activate/deactivate persistent layer color for that layer number
  */
 static int on_keymap_binding_pressed(struct zmk_behavior_binding *binding,
                                      struct zmk_behavior_binding_event event) {
-    ws2812_apply_layer_sync(binding->param1 != 0);
+    if (binding->param1 >= 2) {
+        /* CHANGED: param1 is a persistent layer number */
+        ws2812_set_persistent_layer_active(binding->param1, true);
+    } else {
+        /* Legacy behavior: 0 = off blink, 1 = on blink */
+        ws2812_apply_layer_sync(binding->param1 != 0);
+    }
     return ZMK_BEHAVIOR_OPAQUE;
 }
 
 static int on_keymap_binding_released(struct zmk_behavior_binding *binding,
                                       struct zmk_behavior_binding_event event) {
+    if (binding->param1 >= 2) {
+        /* CHANGED: deactivate persistent layer on release */
+        ws2812_set_persistent_layer_active(binding->param1, false);
+    }
+    /* Legacy: nothing on release (blink already finished) */
     return ZMK_BEHAVIOR_OPAQUE;
 }
 

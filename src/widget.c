@@ -180,6 +180,46 @@ void ws2812_set_persistent_layer_color(uint8_t layer, uint32_t color_hex,
 		layer, color_hex, start_pixel, start_pixel + num_pixels - 1);
 }
 
+/* CHANGED: Activate or deactivate a persistent layer by layer number.
+ * Called from ws2812_lsync behavior (GLOBAL locality) so it works on peripheral. */
+void ws2812_set_persistent_layer_active(uint8_t layer, bool active) {
+	if (!initialized) return;
+
+	for (int i = 0; i < MAX_PERSISTENT_LAYERS; i++) {
+		if (!persistent_layers[i].configured) continue;
+		if (persistent_layers[i].layer != layer) continue;
+
+		bool was_active = persistent_layers[i].active;
+		persistent_layers[i].active = active;
+
+		if (active && !was_active) {
+			persistent_underglow_was_on = pause_underglow_if_needed();
+			persistent_ext_power_was_on = enable_ext_power_if_needed();
+			apply_persistent_layers();
+		} else if (!active && was_active) {
+			clear_pixel_range(persistent_layers[i].start_pixel,
+			                  persistent_layers[i].num_pixels);
+
+			/* Check if any other persistent layers are still active */
+			bool any_still_active = false;
+			for (int j = 0; j < MAX_PERSISTENT_LAYERS; j++) {
+				if (persistent_layers[j].configured && persistent_layers[j].active) {
+					any_still_active = true;
+					break;
+				}
+			}
+			persistent_underglow_active = any_still_active;
+
+			if (!any_still_active) {
+				restore_underglow_if_needed(persistent_underglow_was_on);
+				restore_ext_power_if_needed(persistent_ext_power_was_on,
+				                            persistent_underglow_was_on);
+			}
+		}
+		return;
+	}
+}
+
 /* ========================================================================
  * END PERSISTENT LAYER COLOR SUPPORT
  * ======================================================================== */
