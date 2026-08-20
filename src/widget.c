@@ -180,7 +180,19 @@ void ws2812_set_persistent_layer_color(uint8_t layer, uint32_t color_hex,
 		layer, color_hex, start_pixel, start_pixel + num_pixels - 1);
 }
 
-/* CHANGED: Activate or deactivate a persistent layer by layer number.
+/* ========================================================================
+ * FORWARD DECLARATIONS for static helper functions used below
+ * ======================================================================== */
+static bool pause_underglow_if_needed(void);
+static bool enable_ext_power_if_needed(void);
+static void restore_underglow_if_needed(bool was_on);
+static void restore_ext_power_if_needed(bool ext_power_was_on, bool underglow_was_on);
+
+/* ========================================================================
+ * END FORWARD DECLARATIONS
+ * ======================================================================== */
+
+/* Activate or deactivate a persistent layer by layer number.
  * Called from ws2812_lsync behavior (GLOBAL locality) so it works on peripheral. */
 void ws2812_set_persistent_layer_active(uint8_t layer, bool active) {
 	if (!initialized) return;

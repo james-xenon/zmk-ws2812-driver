@@ -21,12 +21,12 @@ static int __maybe_unused behavior_ws2812_lsync_init(const struct device *dev) {
  * param1 semantics:
  *   0         = legacy layer OFF blink (white->red fade)
  *   1         = legacy layer ON blink (white fade)
- *   2..255    = CHANGED: activate/deactivate persistent layer color for that layer number
+ *   2..255    = activate/deactivate persistent layer color for that layer number
  */
 static int on_keymap_binding_pressed(struct zmk_behavior_binding *binding,
                                      struct zmk_behavior_binding_event event) {
     if (binding->param1 >= 2) {
-        /* CHANGED: param1 is a persistent layer number */
+        /* param1 is a persistent layer number */
         ws2812_set_persistent_layer_active(binding->param1, true);
     } else {
         /* Legacy behavior: 0 = off blink, 1 = on blink */
@@ -38,7 +38,7 @@ static int on_keymap_binding_pressed(struct zmk_behavior_binding *binding,
 static int on_keymap_binding_released(struct zmk_behavior_binding *binding,
                                       struct zmk_behavior_binding_event event) {
     if (binding->param1 >= 2) {
-        /* CHANGED: deactivate persistent layer on release */
+        /* Deactivate persistent layer on release */
         ws2812_set_persistent_layer_active(binding->param1, false);
     }
     /* Legacy: nothing on release (blink already finished) */
