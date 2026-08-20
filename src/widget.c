@@ -15,7 +15,6 @@
 
 #include <zmk/activity.h>
 #include <zmk/events/activity_state_changed.h>
-#include <zmk/events/layer_state_changed.h> /* Вынесено для доступности на обеих половинах */
 
 #if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING)
 #include <zmk/battery.h>
@@ -30,9 +29,10 @@
 #include <drivers/ext_power.h>
 #endif
 
-/* keymap.h нужен только для central (для проверки default layer) */
+/* layer_state_changed доступен ТОЛЬКО на central или non-split */
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE) && \
 	(!IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL))
+#include <zmk/events/layer_state_changed.h>
 #include <zmk/keymap.h>
 #endif
 
@@ -382,7 +382,7 @@ void ws2812_apply_layer_sync(bool enabled) {
 }
 
 /* ========================================================================
- * CENTRAL-ONLY: layer listeners (explicit triggers)
+ * CENTRAL-ONLY: layer listeners (explicit triggers + persistent)
  * ======================================================================== */
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE) && \
 	(!IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL))
@@ -448,11 +448,6 @@ static int layer_listener_cb(const zmk_event_t *eh) {
 ZMK_LISTENER(ws2812_layer_listener, layer_listener_cb);
 ZMK_SUBSCRIPTION(ws2812_layer_listener, zmk_layer_state_changed);
 
-#endif /* CENTRAL-ONLY: layer listeners */
-
-/* ========================================================================
- * PERSISTENT LAYER LISTENER (Available on all halves)
- * ======================================================================== */
 /* Persistent layer listener */
 static int persistent_layer_listener_cb(const zmk_event_t *eh) {
 	const struct zmk_layer_state_changed *ev = as_zmk_layer_state_changed(eh);
@@ -514,6 +509,8 @@ static int persistent_layer_listener_cb(const zmk_event_t *eh) {
 
 ZMK_LISTENER(ws2812_persistent_layer_listener, persistent_layer_listener_cb);
 ZMK_SUBSCRIPTION(ws2812_persistent_layer_listener, zmk_layer_state_changed);
+
+#endif /* CENTRAL-ONLY: layer listeners */
 
 /* ========================================================================
  * BATTERY
