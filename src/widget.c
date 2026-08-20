@@ -15,6 +15,7 @@
 
 #include <zmk/activity.h>
 #include <zmk/events/activity_state_changed.h>
+#include <zmk/events/layer_state_changed.h> /* Вынесено для доступности на обеих половинах */
 
 #if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING)
 #include <zmk/battery.h>
@@ -29,9 +30,9 @@
 #include <drivers/ext_power.h>
 #endif
 
-/* layer_state_changed доступен на central и periphery в split-клавиатуре */
-#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE)
-#include <zmk/events/layer_state_changed.h>
+/* keymap.h нужен только для central (для проверки default layer) */
+#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE) && \
+	(!IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL))
 #include <zmk/keymap.h>
 #endif
 
@@ -381,13 +382,10 @@ void ws2812_apply_layer_sync(bool enabled) {
 }
 
 /* ========================================================================
- * Layer listeners (explicit triggers + persistent)
- * Работает на central и periphery в split-клавиатуре
+ * CENTRAL-ONLY: layer listeners (explicit triggers)
  * ======================================================================== */
-#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE)
-
-/* Explicit trigger listener - только на central */
-#if !IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE) && \
+	(!IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL))
 
 static bool layer_is_explicit_trigger(uint8_t layer) {
 	return (CONFIG_WS2812_WIDGET_LAYER_TRIGGER_0 >= 0 &&
@@ -450,9 +448,12 @@ static int layer_listener_cb(const zmk_event_t *eh) {
 ZMK_LISTENER(ws2812_layer_listener, layer_listener_cb);
 ZMK_SUBSCRIPTION(ws2812_layer_listener, zmk_layer_state_changed);
 
-#endif /* CENTRAL-ONLY: explicit trigger listener */
+#endif /* CENTRAL-ONLY: layer listeners */
 
-/* Persistent layer listener - на central И periphery */
+/* ========================================================================
+ * PERSISTENT LAYER LISTENER (Available on all halves)
+ * ======================================================================== */
+/* Persistent layer listener */
 static int persistent_layer_listener_cb(const zmk_event_t *eh) {
 	const struct zmk_layer_state_changed *ev = as_zmk_layer_state_changed(eh);
 	if (!initialized || ev == NULL) return 0;
@@ -513,8 +514,6 @@ static int persistent_layer_listener_cb(const zmk_event_t *eh) {
 
 ZMK_LISTENER(ws2812_persistent_layer_listener, persistent_layer_listener_cb);
 ZMK_SUBSCRIPTION(ws2812_persistent_layer_listener, zmk_layer_state_changed);
-
-#endif /* Layer listeners */
 
 /* ========================================================================
  * BATTERY
@@ -732,33 +731,17 @@ static void indicator_init_thread(void *d0, void *d1, void *d2) {
 	set_all_pixels((struct led_rgb){0,0,0});
 	LOG_INF("WS2812 temporary indicator initialized with %d pixels", WS2812_NUM_PIXELS);
 
-#if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
-	/* Central (левая половина) */
-	/* Persistent cyan на слое 2 (symb_layer), пиксели 21-41 (не работают физически на левой) */
+	/* Persistent cyan на слое 2 (symb_layer), правая половина (пиксели 21-41) */
 	ws2812_set_persistent_layer_color(2, 0x00FFFF, 21, 21);
 
-	/* Persistent cyan на слое 3 (numb_layer), пиксели 0-20 (работает на левой) */
+	/* Persistent cyan на слое 3 (numb_layer), левая половина (пиксели 0-20) */
 	ws2812_set_persistent_layer_color(3, 0x00FFFF, 0, 21);
 
-	/* Persistent black на слое 15 (symbnolight_layer), вся лента */
-	ws2812_set_persistent_layer_color(15, 0x000000, 0, 42);
+	/* Persistent black на слое 15 (symbnolight_layer), вся лента (выключает подсветку) */
+	//ws2812_set_persistent_layer_color(15, 0x000000, 0, 42);
 
-	/* Persistent black на слое 16 (numbnolight_layer), вся лента */
-	ws2812_set_persistent_layer_color(16, 0x000000, 0, 42);
-#else
-	/* Peripheral (правая половина) или non-split */
-	/* Persistent cyan на слое 2 (symb_layer), пиксели 0-20 (работает на правой) */
-	ws2812_set_persistent_layer_color(2, 0x00FFFF, 0, 21);
-
-	/* Persistent cyan на слое 3 (numb_layer), пиксели 21-41 (не работают физически на правой) */
-	ws2812_set_persistent_layer_color(3, 0x00FFFF, 21, 21);
-
-	/* Persistent black на слое 15 (symbnolight_layer), вся лента */
-	ws2812_set_persistent_layer_color(15, 0x000000, 0, 42);
-
-	/* Persistent black на слое 16 (numbnolight_layer), вся лента */
-	ws2812_set_persistent_layer_color(16, 0x000000, 0, 42);
-#endif
+	/* Persistent black на слое 16 (numbnolight_layer), вся лента (выключает подсветку) */
+	//ws2812_set_persistent_layer_color(16, 0x000000, 0, 42);
 
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY)
 	#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY_ON_START)
