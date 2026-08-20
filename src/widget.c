@@ -29,10 +29,13 @@
 #include <drivers/ext_power.h>
 #endif
 
-/* layer_state_changed доступен ТОЛЬКО на central или non-split */
+/* layer_state_changed нужен на ВСЕХ половинах для persistent colors */
+#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE)
+#include <zmk/events/layer_state_changed.h>
+#endif
+/* keymap.h нужен только на central для layer_default() */
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE) && \
 	(!IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL))
-#include <zmk/events/layer_state_changed.h>
 #include <zmk/keymap.h>
 #endif
 
@@ -500,7 +503,13 @@ static int layer_listener_cb(const zmk_event_t *eh) {
 ZMK_LISTENER(ws2812_layer_listener, layer_listener_cb);
 ZMK_SUBSCRIPTION(ws2812_layer_listener, zmk_layer_state_changed);
 
-/* Persistent layer listener */
+#endif /* CENTRAL-ONLY: layer blink listeners */
+
+/* ========================================================================
+ * PERSISTENT LAYER LISTENER — работает на ВСЕХ половинах (central + peripheral)
+ * ======================================================================== */
+#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE)
+
 static int persistent_layer_listener_cb(const zmk_event_t *eh) {
 	const struct zmk_layer_state_changed *ev = as_zmk_layer_state_changed(eh);
 	if (!initialized || ev == NULL) return 0;
@@ -562,7 +571,7 @@ static int persistent_layer_listener_cb(const zmk_event_t *eh) {
 ZMK_LISTENER(ws2812_persistent_layer_listener, persistent_layer_listener_cb);
 ZMK_SUBSCRIPTION(ws2812_persistent_layer_listener, zmk_layer_state_changed);
 
-#endif /* CENTRAL-ONLY: layer listeners */
+#endif /* SHOW_LAYER_CHANGE: persistent layer listeners */
 
 /* ========================================================================
  * BATTERY
