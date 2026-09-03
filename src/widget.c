@@ -659,24 +659,24 @@ static int persistent_layer_listener_cb(const zmk_event_t *eh) {
 		apply_persistent_layers();
 
 	} else if (!any_active_now && any_active_before) {
-		/* Очищаем ТОЛЬКО деактивированные persistent-слои,
-		 * а не все сконфигурированные. Без этого underglow
-		 * не восстанавливается корректно после сброса. */
-		for (int i = 0; i < MAX_PERSISTENT_LAYERS; i++) {
-			if (persistent_layers[i].configured && !persistent_layers[i].active) {
-				clear_pixel_range(persistent_layers[i].start_pixel,
-				                  persistent_layers[i].num_pixels);
-			}
-		}
-
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_PAUSE_RGB_UNDERGLOW) && IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW)
 		if (persistent_underglow_was_on) {
+			for (int i = 0; i < MAX_PERSISTENT_LAYERS; i++) {
+				if (persistent_layers[i].configured) {
+					clear_pixel_range(persistent_layers[i].start_pixel, persistent_layers[i].num_pixels);
+				}
+			}
 			restore_underglow_if_needed(true);
 			persistent_underglow_was_on = false;
 		} else {
 			restore_underglow_if_needed(false);
 		}
 #else
+		for (int i = 0; i < MAX_PERSISTENT_LAYERS; i++) {
+			if (persistent_layers[i].configured) {
+				clear_pixel_range(persistent_layers[i].start_pixel, persistent_layers[i].num_pixels);
+			}
+		}
 		set_all_pixels((struct led_rgb){0, 0, 0});
 #endif
 		restore_ext_power_if_needed(persistent_ext_power_was_on, persistent_underglow_was_on);
