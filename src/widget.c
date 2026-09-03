@@ -1,6 +1,7 @@
 /*
  * WS2812 temporary indicator widget for ZMK.
  * Driver-only version with Persistent Layer Color support.
+ * Caps Lock indication via native event listener (no layer flag needed).
  */
 
 #include <zmk/behavior.h>
@@ -15,6 +16,7 @@
 
 #include <zmk/activity.h>
 #include <zmk/events/activity_state_changed.h>
+#include <zmk/events/keymap_caps_lock_state_changed.h>
 
 #if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING)
 #include <zmk/battery.h>
@@ -94,19 +96,12 @@ BUILD_ASSERT(WS2812_NUM_PIXELS > 0 && WS2812_NUM_PIXELS <= 255,
 /* Цвет */
 #define PERSISTENT_LAYER_COLOR 0x00FFFF
 
-/* Слой 19 (caps_indicator) — два диода на ЛЕВОЙ половине */
-#define PERSISTENT_LAYER_CAPS       19
-#define PERSISTENT_LAYER_CAPS_COLOR 0xFFFFFF
-#define PERSISTENT_LAYER_CAPS_START 5
-#define PERSISTENT_LAYER_CAPS_COUNT 2
-
 /* Полный список persistent-слоёв. Central рассылает состояние
  * ИМЕННО этих слоёв на peripheral. Список обязан быть одинаковым
  * в обеих сборках, поэтому он объявлен вне #if по половинам. */
 static const uint8_t __maybe_unused persistent_sync_layers[] = {
 	PERSISTENT_LAYER_LEFT,
 	PERSISTENT_LAYER_RIGHT,
-	PERSISTENT_LAYER_CAPS,
 };
 
 enum indicator_kind {
@@ -137,6 +132,17 @@ static bool widget_enabled = IS_ENABLED(CONFIG_WS2812_WIDGET_ENABLED_ON_START);
 static bool activity_active = true;
 static int64_t last_activity_ms;
 static int64_t last_layer_indication_ms;
+
+/* ========================================================================
+ * CAPS LOCK INDICATOR STATE
+ * ======================================================================== */
+#if WS2812_HALF_IS_LEFT
+#define CAPS_INDICATOR_START 5
+#define CAPS_INDICATOR_COUNT 2
+#define CAPS_INDICATOR_COLOR 0xFFFFFF
+
+static bool caps_lock_active = false;
+#endif
 
 /* ========================================================================
  * PERSISTENT LAYER COLOR SUPPORT
@@ -311,6 +317,64 @@ void ws2812_set_persistent_layer_active(uint8_t layer, bool active) {
 
 /* ========================================================================
  * END PERSISTENT LAYER COLOR SUPPORT
+ * ======================================================================== */
+
+/* ========================================================================
+ * CAPS LOCK INDICATOR (Native Event Listener)
+ * ======================================================================== */
+#if WS2812_HALF_IS_LEFT
+
+static void apply_caps_indicator(void) {
+	if (!initialized || !device_is_ready(led_strip)) return;
+
+	if (caps_lock_active) {
+		/* Включаем Caps-индикатор поверх всего */
+		bool any_before = any_persistent_layer_active();
+		if (!any_before && !persistent_underglow_active) {
+			persistent_underglow_was_on = pause_underglow_if_needed();
+			persistent_ext_power_was_on = enable_ext_power_if_needed();
+		}
+		set_pixel_range(hex_to_rgb(CAPS_INDICATOR_COLOR),
+		                CAPS_INDICATOR_START, CAPS_INDICATOR_COUNT);
+	} else {
+		/* Гасим Caps-индикатор */
+		clear_pixel_range(CAPS_INDICATOR_START, CAPS_INDICATOR_COUNT);
+
+		/* Если persistent-слои активны — перерисовываем их */
+		if (any_persistent_layer_active()) {
+			apply_persistent_layers();
+		} else {
+			/* Восстанавливаем underglow если нужно */
+			restore_underglow_if_needed(persistent_underglow_was_on);
+			restore_ext_power_if_needed(persistent_ext_power_was_on,
+			                            persistent_underglow_was_on);
+			persistent_underglow_was_on = false;
+		}
+	}
+}
+
+static int caps_lock_listener_cb(const zmk_event_t *eh) {
+	const struct zmk_keymap_caps_lock_state_changed *ev =
+		as_zmk_keymap_caps_lock_state_changed(eh);
+	if (ev == NULL) return 0;
+
+	caps_lock_active = ev->state;
+	apply_caps_indicator();
+
+	LOG_INF("Caps Lock %s, LED %d-%d updated",
+		caps_lock_active ? "ON" : "OFF",
+		CAPS_INDICATOR_START,
+		CAPS_INDICATOR_START + CAPS_INDICATOR_COUNT - 1);
+
+	return 0;
+}
+
+ZMK_LISTENER(ws2812_caps_lock_listener, caps_lock_listener_cb);
+ZMK_SUBSCRIPTION(ws2812_caps_lock_listener, zmk_keymap_caps_lock_state_changed);
+
+#endif /* WS2812_HALF_IS_LEFT */
+/* ========================================================================
+ * END CAPS LOCK INDICATOR
  * ======================================================================== */
 
 static struct led_rgb scale_rgb(struct led_rgb color, uint16_t numerator, uint16_t denominator) {
@@ -862,6 +926,12 @@ static int activity_listener_cb(const zmk_event_t *eh) {
 			persistent_ext_power_was_on = enable_ext_power_if_needed();
 			apply_persistent_layers();
 		}
+#if WS2812_HALF_IS_LEFT
+		/* При пробуждении восстанавливаем Caps-индикатор если он был активен */
+		if (caps_lock_active) {
+			apply_caps_indicator();
+		}
+#endif
 	} else if (ev->state == ZMK_ACTIVITY_SLEEP) {
 		activity_active = false;
 		set_all_pixels((struct led_rgb){0, 0, 0});
@@ -909,9 +979,6 @@ static void indicator_init_thread(void *d0, void *d1, void *d2) {
 	/* ЛЕВАЯ половина: слой 3 (numb_layer) — вся её лента */
 	ws2812_set_persistent_layer_color(PERSISTENT_LAYER_LEFT, PERSISTENT_LAYER_COLOR,
 		0, WS2812_NUM_PIXELS);
-	/* Слой 19 (caps_indicator) — диоды 5 и 6, белый */
-	ws2812_set_persistent_layer_color(PERSISTENT_LAYER_CAPS, PERSISTENT_LAYER_CAPS_COLOR,
-		PERSISTENT_LAYER_CAPS_START, PERSISTENT_LAYER_CAPS_COUNT);
 #endif
 #if WS2812_HALF_IS_RIGHT
 	/* ПРАВАЯ половина: слой 2 (symb_layer) — вся её лента */
@@ -929,6 +996,11 @@ static void indicator_init_thread(void *d0, void *d1, void *d2) {
 	} else {
 		set_all_pixels((struct led_rgb){0,0,0});
 	}
+
+#if WS2812_HALF_IS_LEFT
+	/* Восстанавливаем Caps-индикатор при старте (если Caps был включён до ребута) */
+	apply_caps_indicator();
+#endif
 
 	LOG_INF("WS2812 temporary indicator initialized with %d pixels (half: %s)",
 		WS2812_NUM_PIXELS, WS2812_HALF_IS_LEFT ? "left/central" : "right/peripheral");
