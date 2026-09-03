@@ -94,12 +94,19 @@ BUILD_ASSERT(WS2812_NUM_PIXELS > 0 && WS2812_NUM_PIXELS <= 255,
 /* Цвет */
 #define PERSISTENT_LAYER_COLOR 0x00FFFF
 
+/* Слой 19 (caps_indicator) — два диода на ЛЕВОЙ половине */
+#define PERSISTENT_LAYER_CAPS       19
+#define PERSISTENT_LAYER_CAPS_COLOR 0xFFFFFF
+#define PERSISTENT_LAYER_CAPS_START 5
+#define PERSISTENT_LAYER_CAPS_COUNT 2
+
 /* Полный список persistent-слоёв. Central рассылает состояние
  * ИМЕННО этих слоёв на peripheral. Список обязан быть одинаковым
  * в обеих сборках, поэтому он объявлен вне #if по половинам. */
 static const uint8_t __maybe_unused persistent_sync_layers[] = {
 	PERSISTENT_LAYER_LEFT,
 	PERSISTENT_LAYER_RIGHT,
+	PERSISTENT_LAYER_CAPS,
 };
 
 enum indicator_kind {
@@ -902,6 +909,9 @@ static void indicator_init_thread(void *d0, void *d1, void *d2) {
 	/* ЛЕВАЯ половина: слой 3 (numb_layer) — вся её лента */
 	ws2812_set_persistent_layer_color(PERSISTENT_LAYER_LEFT, PERSISTENT_LAYER_COLOR,
 		0, WS2812_NUM_PIXELS);
+	/* Слой 19 (caps_indicator) — диоды 5 и 6, белый */
+	ws2812_set_persistent_layer_color(PERSISTENT_LAYER_CAPS, PERSISTENT_LAYER_CAPS_COLOR,
+		PERSISTENT_LAYER_CAPS_START, PERSISTENT_LAYER_CAPS_COUNT);
 #endif
 #if WS2812_HALF_IS_RIGHT
 	/* ПРАВАЯ половина: слой 2 (symb_layer) — вся её лента */
