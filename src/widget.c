@@ -1,7 +1,7 @@
 /*
  * WS2812 temporary indicator widget for ZMK.
  * Driver-only version with Persistent Layer Color support.
- * Caps Lock indication via native event listener (no layer flag needed).
+ * Caps Lock indication disabled (event not available in ZMK v0.3.0).
  */
 
 #include <zmk/behavior.h>
@@ -16,7 +16,6 @@
 
 #include <zmk/activity.h>
 #include <zmk/events/activity_state_changed.h>
-#include <zmk/events/keymap_caps_lock_state_changed.h>
 
 #if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING)
 #include <zmk/battery.h>
@@ -135,6 +134,9 @@ static int64_t last_layer_indication_ms;
 
 /* ========================================================================
  * CAPS LOCK INDICATOR STATE
+ * NOTE: Native caps lock event is NOT available in ZMK v0.3.0.
+ * This state variable is kept for future use when ZMK is updated.
+ * Currently caps_lock_active is always false.
  * ======================================================================== */
 #if WS2812_HALF_IS_LEFT
 #define CAPS_INDICATOR_START 5
@@ -320,7 +322,9 @@ void ws2812_set_persistent_layer_active(uint8_t layer, bool active) {
  * ======================================================================== */
 
 /* ========================================================================
- * CAPS LOCK INDICATOR (Native Event Listener)
+ * CAPS LOCK INDICATOR HELPER
+ * Kept for future use when ZMK is updated to support native caps lock event.
+ * Currently caps_lock_active is always false, so this is a no-op.
  * ======================================================================== */
 #if WS2812_HALF_IS_LEFT
 
@@ -328,7 +332,6 @@ static void apply_caps_indicator(void) {
 	if (!initialized || !device_is_ready(led_strip)) return;
 
 	if (caps_lock_active) {
-		/* Включаем Caps-индикатор поверх всего */
 		bool any_before = any_persistent_layer_active();
 		if (!any_before && !persistent_underglow_active) {
 			persistent_underglow_was_on = pause_underglow_if_needed();
@@ -337,14 +340,11 @@ static void apply_caps_indicator(void) {
 		set_pixel_range(hex_to_rgb(CAPS_INDICATOR_COLOR),
 		                CAPS_INDICATOR_START, CAPS_INDICATOR_COUNT);
 	} else {
-		/* Гасим Caps-индикатор */
 		clear_pixel_range(CAPS_INDICATOR_START, CAPS_INDICATOR_COUNT);
 
-		/* Если persistent-слои активны — перерисовываем их */
 		if (any_persistent_layer_active()) {
 			apply_persistent_layers();
 		} else {
-			/* Восстанавливаем underglow если нужно */
 			restore_underglow_if_needed(persistent_underglow_was_on);
 			restore_ext_power_if_needed(persistent_ext_power_was_on,
 			                            persistent_underglow_was_on);
@@ -353,28 +353,9 @@ static void apply_caps_indicator(void) {
 	}
 }
 
-static int caps_lock_listener_cb(const zmk_event_t *eh) {
-	const struct zmk_keymap_caps_lock_state_changed *ev =
-		as_zmk_keymap_caps_lock_state_changed(eh);
-	if (ev == NULL) return 0;
-
-	caps_lock_active = ev->state;
-	apply_caps_indicator();
-
-	LOG_INF("Caps Lock %s, LED %d-%d updated",
-		caps_lock_active ? "ON" : "OFF",
-		CAPS_INDICATOR_START,
-		CAPS_INDICATOR_START + CAPS_INDICATOR_COUNT - 1);
-
-	return 0;
-}
-
-ZMK_LISTENER(ws2812_caps_lock_listener, caps_lock_listener_cb);
-ZMK_SUBSCRIPTION(ws2812_caps_lock_listener, zmk_keymap_caps_lock_state_changed);
-
 #endif /* WS2812_HALF_IS_LEFT */
 /* ========================================================================
- * END CAPS LOCK INDICATOR
+ * END CAPS LOCK INDICATOR HELPER
  * ======================================================================== */
 
 static struct led_rgb scale_rgb(struct led_rgb color, uint16_t numerator, uint16_t denominator) {
@@ -927,7 +908,9 @@ static int activity_listener_cb(const zmk_event_t *eh) {
 			apply_persistent_layers();
 		}
 #if WS2812_HALF_IS_LEFT
-		/* При пробуждении восстанавливаем Caps-индикатор если он был активен */
+		/* При пробуждении восстанавливаем Caps-индикатор если он был активен.
+		 * NOTE: caps_lock_active is always false in ZMK v0.3.0 (no native event).
+		 * This will work automatically when ZMK is updated. */
 		if (caps_lock_active) {
 			apply_caps_indicator();
 		}
@@ -998,7 +981,9 @@ static void indicator_init_thread(void *d0, void *d1, void *d2) {
 	}
 
 #if WS2812_HALF_IS_LEFT
-	/* Восстанавливаем Caps-индикатор при старте (если Caps был включён до ребута) */
+	/* Восстанавливаем Caps-индикатор при старте.
+	 * NOTE: caps_lock_active is always false in ZMK v0.3.0.
+	 * This is a safe no-op that will work when ZMK is updated. */
 	apply_caps_indicator();
 #endif
 
