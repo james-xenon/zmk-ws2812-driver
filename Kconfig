@@ -514,4 +514,9 @@ config WS2812_WIDGET_COLOR_OFF
     hex "Off/black color value"
     default 0x000000
 
+config WS2812_WIDGET_LAYER_COLOR_RETURN
+    hex "Color for returning to default layer (layer 0)"
+    default 0x00FF00
+    depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
+
 endif

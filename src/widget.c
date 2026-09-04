@@ -517,16 +517,30 @@ static void enqueue_indicator(struct indicator_request request, bool periodic) {
 }
 
 static struct indicator_request make_layer_request(bool enabled) {
-	return (struct indicator_request){
-		.kind = enabled ? INDICATOR_KIND_LAYER_ON : INDICATOR_KIND_LAYER_OFF,
-		.color = hex_to_rgb(enabled ? CONFIG_WS2812_WIDGET_LAYER_COLOR_ON
-			: CONFIG_WS2812_WIDGET_LAYER_COLOR_OFF),
-		.fade_in_ms = CONFIG_WS2812_WIDGET_LAYER_FADE_IN_MS,
-		.hold_ms = CONFIG_WS2812_WIDGET_LAYER_HOLD_MS,
-		.fade_out_ms = CONFIG_WS2812_WIDGET_LAYER_FADE_OUT_MS,
-		.gap_ms = CONFIG_WS2812_WIDGET_LAYER_BLINK_PAUSE_MS,
-		.repeat_count = CONFIG_WS2812_WIDGET_LAYER_REPEAT_COUNT,
-	};
+    struct led_rgb color;
+    enum indicator_kind kind;
+
+    if (enabled) {
+        kind  = INDICATOR_KIND_LAYER_ON;
+        color = hex_to_rgb(CONFIG_WS2812_WIDGET_LAYER_COLOR_ON);
+    } else if (zmk_keymap_layer_default() == zmk_keymap_highest_layer_active()) {
+        /* вернулись на базовый слой */
+        kind  = INDICATOR_KIND_LAYER_OFF;
+        color = hex_to_rgb(CONFIG_WS2812_WIDGET_LAYER_COLOR_RETURN);
+    } else {
+        kind  = INDICATOR_KIND_LAYER_OFF;
+        color = hex_to_rgb(CONFIG_WS2812_WIDGET_LAYER_COLOR_OFF);
+    }
+
+    return (struct indicator_request){
+        .kind         = kind,
+        .color        = color,
+        .fade_in_ms   = CONFIG_WS2812_WIDGET_LAYER_FADE_IN_MS,
+        .hold_ms      = CONFIG_WS2812_WIDGET_LAYER_HOLD_MS,
+        .fade_out_ms  = CONFIG_WS2812_WIDGET_LAYER_FADE_OUT_MS,
+        .gap_ms       = CONFIG_WS2812_WIDGET_LAYER_BLINK_PAUSE_MS,
+        .repeat_count = CONFIG_WS2812_WIDGET_LAYER_REPEAT_COUNT,
+    };
 }
 
 static struct indicator_request make_manual_layer_request(void) {
