@@ -16,6 +16,7 @@
 
 #include <zmk/activity.h>
 #include <zmk/events/activity_state_changed.h>
+#include <zmk/keymap.h>
 
 #if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING)
 #include <zmk/battery.h>
