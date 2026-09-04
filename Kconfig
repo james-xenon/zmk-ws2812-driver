@@ -151,6 +151,11 @@ config WS2812_WIDGET_LAYER_COLOR_MANUAL
     default 0xFFFFFF
     depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
 
+config WS2812_WIDGET_LAYER_COLOR_RETURN
+    hex "Color for returning to default layer (layer 0)"
+    default 0x00FF00
+    depends on WS2812_WIDGET_SHOW_LAYER_CHANGE
+
 config WS2812_WIDGET_LAYER_FADE_ENABLE
     bool "Fade layer indications"
     default y

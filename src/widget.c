@@ -529,6 +529,18 @@ static struct indicator_request make_layer_request(bool enabled) {
 	};
 }
 
+static struct indicator_request make_layer_return_request(void) {
+	return (struct indicator_request){
+		.kind = INDICATOR_KIND_LAYER_OFF,
+		.color = hex_to_rgb(CONFIG_WS2812_WIDGET_LAYER_COLOR_RETURN),
+		.fade_in_ms = CONFIG_WS2812_WIDGET_LAYER_FADE_IN_MS,
+		.hold_ms = CONFIG_WS2812_WIDGET_LAYER_HOLD_MS,
+		.fade_out_ms = CONFIG_WS2812_WIDGET_LAYER_FADE_OUT_MS,
+		.gap_ms = CONFIG_WS2812_WIDGET_LAYER_BLINK_PAUSE_MS,
+		.repeat_count = CONFIG_WS2812_WIDGET_LAYER_REPEAT_COUNT,
+	};
+}
+
 static struct indicator_request make_manual_layer_request(void) {
 	return (struct indicator_request){
 		.kind = INDICATOR_KIND_MANUAL_LAYER,
@@ -544,7 +556,12 @@ static struct indicator_request make_manual_layer_request(void) {
 void ws2812_indicate_layer(void) {
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE)
 	last_layer_indication_ms = k_uptime_get();
-	enqueue_indicator(make_manual_layer_request(), false);
+#if WS2812_HAS_LAYER_EVENTS
+	/* Подавляем следующее событие layer_listener_cb: оно придёт от &to 0
+	 * в макросе сброса, но зелёная вспышка уже добавлена в очередь здесь. */
+	suppress_next_layer_indication = true;
+#endif
+	enqueue_indicator(make_layer_return_request(), false);
 #endif
 }
 
@@ -588,6 +605,9 @@ static bool layer_should_trigger(uint8_t layer) {
 static struct k_work_delayable layer_indicator_work;
 static bool pending_layer_state;
 static bool pending_layer_valid;
+/* Выставляется ws2812_indicate_layer() перед &to 0 в макросе сброса,
+ * чтобы listener не добавил красный блик поверх зелёного. */
+static bool suppress_next_layer_indication = false;
 
 static void layer_indicator_work_cb(struct k_work *work) {
 	ARG_UNUSED(work);
@@ -612,6 +632,10 @@ static void layer_indicator_work_cb(struct k_work *work) {
 static int layer_listener_cb(const zmk_event_t *eh) {
 	const struct zmk_layer_state_changed *ev = as_zmk_layer_state_changed(eh);
 	if (!initialized || ev == NULL || !layer_should_trigger(ev->layer)) return 0;
+	if (suppress_next_layer_indication) {
+		suppress_next_layer_indication = false;
+		return 0;
+	}
 	pending_layer_state = ev->state;
 	pending_layer_valid = true;
 	k_work_reschedule(&layer_indicator_work, K_MSEC(CONFIG_WS2812_WIDGET_LAYER_DEBOUNCE_MS));
