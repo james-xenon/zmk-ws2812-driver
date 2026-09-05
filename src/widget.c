@@ -541,6 +541,18 @@ static struct indicator_request make_layer_return_request(void) {
 	};
 }
 
+static struct indicator_request make_layer_return_request(void) {
+	return (struct indicator_request){
+		.kind = INDICATOR_KIND_LAYER_OFF,
+		.color = hex_to_rgb(CONFIG_WS2812_WIDGET_LAYER_COLOR_RETURN),
+		.fade_in_ms = CONFIG_WS2812_WIDGET_LAYER_FADE_IN_MS,
+		.hold_ms = CONFIG_WS2812_WIDGET_LAYER_HOLD_MS,
+		.fade_out_ms = CONFIG_WS2812_WIDGET_LAYER_FADE_OUT_MS,
+		.gap_ms = CONFIG_WS2812_WIDGET_LAYER_BLINK_PAUSE_MS,
+		.repeat_count = CONFIG_WS2812_WIDGET_LAYER_REPEAT_COUNT,
+	};
+}
+
 static struct indicator_request make_manual_layer_request(void) {
 	return (struct indicator_request){
 		.kind = INDICATOR_KIND_MANUAL_LAYER,
@@ -571,6 +583,13 @@ void ws2812_apply_layer_sync(bool enabled) {
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE)
 	last_layer_indication_ms = k_uptime_get();
 	enqueue_indicator(make_layer_request(enabled), false);
+#endif
+}
+
+void ws2812_apply_layer_return(void) {
+#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE)
+	last_layer_indication_ms = k_uptime_get();
+	enqueue_indicator(make_layer_return_request(), false);
 #endif
 }
 

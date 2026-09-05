@@ -47,6 +47,11 @@ void ws2812_indicate_layer(void);
 void ws2812_apply_layer_sync(bool enabled);
 
 /**
+ * @brief Queue a green "return to layer 0" flash. Called via ws2812_lsync param1=1 param2=2.
+ */
+void ws2812_apply_layer_return(void);
+
+/**
  * @brief Assign a persistent color to a layer on THIS half of the keyboard.
  *
  * @param layer       Layer number.
