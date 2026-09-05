@@ -577,6 +577,9 @@ void ws2812_apply_layer_sync(bool enabled) {
 void ws2812_apply_layer_return(void) {
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE)
 	last_layer_indication_ms = k_uptime_get();
+#if WS2812_HAS_LAYER_EVENTS
+	suppress_next_layer_indication = true;
+#endif
 	enqueue_indicator(make_layer_return_request(), false);
 #endif
 }
