@@ -553,12 +553,14 @@ static struct indicator_request make_manual_layer_request(void) {
 	};
 }
 
+#if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE) && WS2812_HAS_LAYER_EVENTS
+static bool suppress_next_layer_indication = false;
+#endif
+
 void ws2812_indicate_layer(void) {
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE)
 	last_layer_indication_ms = k_uptime_get();
 #if WS2812_HAS_LAYER_EVENTS
-	/* Подавляем следующее событие layer_listener_cb: оно придёт от &to 0
-	 * в макросе сброса, но зелёная вспышка уже добавлена в очередь здесь. */
 	suppress_next_layer_indication = true;
 #endif
 	enqueue_indicator(make_layer_return_request(), false);
@@ -605,9 +607,6 @@ static bool layer_should_trigger(uint8_t layer) {
 static struct k_work_delayable layer_indicator_work;
 static bool pending_layer_state;
 static bool pending_layer_valid;
-/* Выставляется ws2812_indicate_layer() перед &to 0 в макросе сброса,
- * чтобы listener не добавил красный блик поверх зелёного. */
-static bool suppress_next_layer_indication = false;
 
 static void layer_indicator_work_cb(struct k_work *work) {
 	ARG_UNUSED(work);
