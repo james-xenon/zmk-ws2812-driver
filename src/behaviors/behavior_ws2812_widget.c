@@ -23,6 +23,9 @@ static int __maybe_unused behavior_ws2812_wdg_init(const struct device *dev) {
  *   &ws2812_wdg 3 = force indication ON
  *   &ws2812_wdg 4 = force indication OFF
  *   &ws2812_wdg 5 = battery blink BOTH halves (left then right)
+ *   &ws2812_wdg 6 = widget brightness DOWN by 10%
+ *   &ws2812_wdg 7 = widget brightness UP by 10%
+ *   &ws2812_wdg 8 = reset widget brightness to 50%
  */
 static int on_keymap_binding_pressed(struct zmk_behavior_binding *binding,
                                      struct zmk_behavior_binding_event event) {
@@ -52,6 +55,18 @@ static int on_keymap_binding_pressed(struct zmk_behavior_binding *binding,
 #if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING) && IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY)
         ws2812_indicate_battery_both();
 #endif
+        break;
+
+    case 6:
+        ws2812_change_widget_brightness(-1);
+        break;
+
+    case 7:
+        ws2812_change_widget_brightness(1);
+        break;
+
+    case 8:
+        ws2812_reset_widget_brightness();
         break;
 
     case 0:

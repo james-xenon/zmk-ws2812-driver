@@ -20,6 +20,23 @@ void ws2812_set_indication_enabled(bool enabled);
 void ws2812_toggle_indication_enabled(void);
 
 /**
+ * @brief Set brightness for widget-generated WS2812 lighting.
+ *        Independent from normal ZMK RGB underglow brightness.
+ *
+ * @param percent Brightness in percent; clamped to 10..100.
+ */
+void ws2812_set_widget_brightness(uint8_t percent);
+
+/** @brief Change widget brightness by one 10-percent step. */
+void ws2812_change_widget_brightness(int8_t direction);
+
+/** @brief Restore widget brightness to the default 50 percent. */
+void ws2812_reset_widget_brightness(void);
+
+/** @brief Return current widget brightness in percent. */
+uint8_t ws2812_get_widget_brightness(void);
+
+/**
  * @brief Queue a WS2812 battery indication (local half only).
  */
 void ws2812_indicate_battery(void);

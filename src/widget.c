@@ -3,7 +3,7 @@
  *
  * Goals of this revision:
  *   - real host Caps Lock state via CONFIG_ZMK_HID_INDICATORS;
- *   - Caps Lock lights only R/T LEDs on the left half;
+ *   - Caps Lock lights only the configured LED range on the left half;
  *   - persistent layer colors and Caps can coexist;
  *   - temporary layer/battery/manual flashes temporarily override static state
  *     and then restore it deterministically;
@@ -19,6 +19,7 @@
 #include <zephyr/drivers/led_strip.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/settings/settings.h>
 #include <zephyr/sys/util.h>
 
 #include <zmk/activity.h>
@@ -81,6 +82,28 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #define WS2812_NUM_PIXELS DT_PROP(WS2812_STRIP_NODE, chain_length)
 
+/* -------------------------------------------------------------------------
+ * Widget brightness
+ *
+ * This brightness is independent from normal ZMK RGB underglow brightness.
+ * It applies only to colors physically written by this widget: Caps Lock,
+ * persistent layers, layer/manual flashes, battery and connectivity.
+ *
+ * The value is adjustable from the keymap through &ws2812_wdg 6/7/8 and is
+ * persisted in Zephyr settings when CONFIG_SETTINGS is enabled.
+ * ------------------------------------------------------------------------- */
+#define WS2812_WIDGET_BRIGHTNESS_DEFAULT 50U
+#define WS2812_WIDGET_BRIGHTNESS_MIN 10U
+#define WS2812_WIDGET_BRIGHTNESS_MAX 100U
+#define WS2812_WIDGET_BRIGHTNESS_STEP 10U
+
+BUILD_ASSERT(WS2812_WIDGET_BRIGHTNESS_MIN <= WS2812_WIDGET_BRIGHTNESS_DEFAULT,
+             "WS2812 widget default brightness is below the minimum");
+BUILD_ASSERT(WS2812_WIDGET_BRIGHTNESS_DEFAULT <= WS2812_WIDGET_BRIGHTNESS_MAX,
+             "WS2812 widget default brightness is above the maximum");
+BUILD_ASSERT(WS2812_WIDGET_BRIGHTNESS_MAX <= 100U,
+             "WS2812 widget brightness maximum must not exceed 100 percent");
+
 BUILD_ASSERT(CONFIG_WS2812_WIDGET_FADE_STEP_MS > 0,
              "CONFIG_WS2812_WIDGET_FADE_STEP_MS must be greater than zero");
 BUILD_ASSERT(WS2812_NUM_PIXELS > 0 && WS2812_NUM_PIXELS <= 255,
@@ -102,12 +125,14 @@ static const uint8_t __maybe_unused persistent_sync_layers[] = {
  * Caps Lock indicator
  *
  * On this PCB each half has its own 0..20 LED index space.
- * Left-half LEDs 5 and 6 correspond to R and T in the current hardware map.
+ * Current Caps range on the LEFT half is LED 0..1 (START=0, COUNT=2).
+ * Caps color is electric purple. Its actual output brightness is controlled
+ * by the independent widget brightness setting described above.
  * ------------------------------------------------------------------------- */
 #if WS2812_HALF_IS_LEFT
 #define CAPS_INDICATOR_START 0
 #define CAPS_INDICATOR_COUNT 2
-#define CAPS_INDICATOR_COLOR 0xFFFFFF
+#define CAPS_INDICATOR_COLOR 0x8000FF
 #define HID_LED_CAPS_LOCK_BIT BIT(1)
 static bool caps_lock_active;
 #endif
@@ -153,7 +178,10 @@ struct persistent_layer_config {
 
 static const struct device *const led_strip = DEVICE_DT_GET(WS2812_STRIP_NODE);
 static struct led_rgb pixels[WS2812_NUM_PIXELS];
+static struct led_rgb output_pixels[WS2812_NUM_PIXELS];
 static struct persistent_layer_config persistent_layers[MAX_PERSISTENT_LAYERS];
+
+static uint8_t widget_brightness_percent = WS2812_WIDGET_BRIGHTNESS_DEFAULT;
 
 static bool initialized;
 static bool widget_enabled = IS_ENABLED(CONFIG_WS2812_WIDGET_ENABLED_ON_START);
@@ -208,13 +236,133 @@ static void buffer_range(struct led_rgb color, uint8_t start, uint8_t count) {
 }
 
 static int flush_pixels(void) {
-    return led_strip_update_rgb(led_strip, pixels, WS2812_NUM_PIXELS);
+    /* Keep pixels[] at full logical color and apply brightness only at output.
+     * This makes brightness changes lossless and immediately reversible. */
+    for (int i = 0; i < WS2812_NUM_PIXELS; i++) {
+        output_pixels[i].r =
+            (uint8_t)(((uint16_t)pixels[i].r * widget_brightness_percent) / 100U);
+        output_pixels[i].g =
+            (uint8_t)(((uint16_t)pixels[i].g * widget_brightness_percent) / 100U);
+        output_pixels[i].b =
+            (uint8_t)(((uint16_t)pixels[i].b * widget_brightness_percent) / 100U);
+    }
+
+    return led_strip_update_rgb(led_strip, output_pixels, WS2812_NUM_PIXELS);
 }
 
 static int set_all_pixels(struct led_rgb color) {
     buffer_fill(color);
     return flush_pixels();
 }
+
+/* Forward declarations used by brightness control. */
+static bool static_lighting_needed(void);
+static void redraw_static_lighting_locked(void);
+
+/* -------------------------------------------------------------------------
+ * Widget brightness control + persistence
+ * ------------------------------------------------------------------------- */
+static uint8_t clamp_widget_brightness(uint8_t percent) {
+    return CLAMP(percent, WS2812_WIDGET_BRIGHTNESS_MIN, WS2812_WIDGET_BRIGHTNESS_MAX);
+}
+
+#if IS_ENABLED(CONFIG_SETTINGS)
+static void save_widget_brightness_work_handler(struct k_work *work) {
+    ARG_UNUSED(work);
+
+    int rc = settings_save_one("ws2812_widget/brightness",
+                               &widget_brightness_percent,
+                               sizeof(widget_brightness_percent));
+    if (rc < 0) {
+        LOG_WRN("Failed to save WS2812 widget brightness: %d", rc);
+    }
+}
+
+K_WORK_DELAYABLE_DEFINE(widget_brightness_save_work, save_widget_brightness_work_handler);
+#endif
+
+static void schedule_widget_brightness_save(void) {
+#if IS_ENABLED(CONFIG_SETTINGS)
+    k_work_reschedule(&widget_brightness_save_work,
+                      K_MSEC(CONFIG_ZMK_SETTINGS_SAVE_DEBOUNCE));
+#endif
+}
+
+static void redraw_for_brightness_change_locked(void) {
+    if (!initialized || !device_is_ready(led_strip)) {
+        return;
+    }
+
+    if (static_lighting_needed()) {
+        redraw_static_lighting_locked();
+    }
+}
+
+void ws2812_set_widget_brightness(uint8_t percent) {
+    uint8_t new_value = clamp_widget_brightness(percent);
+
+    k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
+    widget_brightness_percent = new_value;
+    redraw_for_brightness_change_locked();
+    k_mutex_unlock(&ws2812_lighting_mutex);
+
+    schedule_widget_brightness_save();
+
+    LOG_INF("WS2812 widget brightness: %u%%", widget_brightness_percent);
+}
+
+void ws2812_change_widget_brightness(int8_t direction) {
+    int value = widget_brightness_percent;
+
+    if (direction > 0) {
+        value += WS2812_WIDGET_BRIGHTNESS_STEP;
+    } else if (direction < 0) {
+        value -= WS2812_WIDGET_BRIGHTNESS_STEP;
+    } else {
+        return;
+    }
+
+    value = CLAMP(value, WS2812_WIDGET_BRIGHTNESS_MIN, WS2812_WIDGET_BRIGHTNESS_MAX);
+    ws2812_set_widget_brightness((uint8_t)value);
+}
+
+void ws2812_reset_widget_brightness(void) {
+    ws2812_set_widget_brightness(WS2812_WIDGET_BRIGHTNESS_DEFAULT);
+}
+
+uint8_t ws2812_get_widget_brightness(void) {
+    return widget_brightness_percent;
+}
+
+#if IS_ENABLED(CONFIG_SETTINGS)
+static int ws2812_widget_settings_set(const char *name, size_t len,
+                                      settings_read_cb read_cb, void *cb_arg) {
+    if (strcmp(name, "brightness") != 0) {
+        return -ENOENT;
+    }
+
+    if (len != sizeof(widget_brightness_percent)) {
+        return -EINVAL;
+    }
+
+    uint8_t saved = WS2812_WIDGET_BRIGHTNESS_DEFAULT;
+    int rc = read_cb(cb_arg, &saved, sizeof(saved));
+    if (rc < 0) {
+        return rc;
+    }
+
+    widget_brightness_percent = clamp_widget_brightness(saved);
+    LOG_INF("Loaded WS2812 widget brightness: %u%%", widget_brightness_percent);
+    return 0;
+}
+
+SETTINGS_STATIC_HANDLER_DEFINE(ws2812_widget_brightness,
+                               "ws2812_widget",
+                               NULL,
+                               ws2812_widget_settings_set,
+                               NULL,
+                               NULL);
+#endif
 
 /* -------------------------------------------------------------------------
  * Normal underglow/ext-power helpers
