@@ -105,8 +105,8 @@ static const uint8_t __maybe_unused persistent_sync_layers[] = {
  * Left-half LEDs 5 and 6 correspond to R and T in the current hardware map.
  * ------------------------------------------------------------------------- */
 #if WS2812_HALF_IS_LEFT
-#define CAPS_INDICATOR_START 5
-#define CAPS_INDICATOR_COUNT 2
+#define CAPS_INDICATOR_START 0
+#define CAPS_INDICATOR_COUNT 1
 #define CAPS_INDICATOR_COLOR 0xFFFFFF
 #define HID_LED_CAPS_LOCK_BIT BIT(1)
 static bool caps_lock_active;
