@@ -22,6 +22,10 @@
 #include <zephyr/settings/settings.h>
 #include <zephyr/sys/util.h>
 
+#if defined(CONFIG_SOC_NRF52840)
+#include <hal/nrf_power.h>
+#endif
+
 #include <zmk/activity.h>
 #include <zmk/behavior.h>
 #include <zmk/behavior_queue.h>
@@ -73,6 +77,21 @@
 #include <zmk_ws2812_widget/widget.h>
 
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
+
+/* -------------------------------------------------------------------------
+ * Local USB VBUS detection
+ *
+ * Do not use ZMK USB state here. In split keyboards only the central half
+ * owns the USB stack. The nRF52840 hardware VBUS detector works independently
+ * on each half and reports whether the local USB VBUS pin is powered.
+ * ------------------------------------------------------------------------- */
+static bool ws2812_usb_vbus_present(void) {
+#if defined(CONFIG_SOC_NRF52840)
+    return (NRF_POWER->USBREGSTATUS & 0x01U) != 0U;
+#else
+    return false;
+#endif
+}
 
 #define WS2812_STRIP_NODE DT_CHOSEN(zmk_ws2812_widget)
 
@@ -723,6 +742,15 @@ static void execute_indicator_request(const struct indicator_request *request) {
         return;
     }
 
+    /* Battery critical warning is local to each half. If this half is powered
+     * through USB, suppress only this half's warning. Other indicators remain
+     * unchanged. The check is repeated at execution time so a cable inserted
+     * after queueing the warning cancels the remaining flashes. */
+    if (request->kind == INDICATOR_KIND_BATTERY_CRITICAL &&
+        ws2812_usb_vbus_present()) {
+        return;
+    }
+
     k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
 
     bool had_static_owner = static_lighting_needed();
@@ -1139,7 +1167,8 @@ static int battery_listener_cb(const zmk_event_t *eh) {
 #endif
 
     if (ev->state_of_charge > 0 &&
-        ev->state_of_charge <= CONFIG_WS2812_WIDGET_BATTERY_LEVEL_CRITICAL) {
+        ev->state_of_charge <= CONFIG_WS2812_WIDGET_BATTERY_LEVEL_CRITICAL &&
+        !ws2812_usb_vbus_present()) {
         enqueue_indicator(make_battery_request(
                               hex_to_rgb(CONFIG_WS2812_WIDGET_BATTERY_COLOR_CRITICAL),
                               CONFIG_WS2812_WIDGET_BATTERY_CRITICAL_REPEAT_COUNT,
