@@ -1,11 +1,9 @@
-description: RGB idle timer control
+description: RGB timer control behavior
 
 compatible: "zmk,behavior-rgb-timer"
 
-include: zero_param.yaml
+include: one_param.yaml
 
 properties:
-
   "#binding-cells":
-    type: int
     const: 1
