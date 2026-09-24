@@ -813,16 +813,17 @@ void ws2812_idle_sync_off(void)
 {
 #if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW)
 
-    ws2812_apply_layer_sync(0, false);
+    ws2812_apply_layer_sync(false);
 
 #endif
 }
+
 
 void ws2812_idle_sync_on(void)
 {
 #if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW)
 
-    ws2812_apply_layer_sync(0, true);
+    ws2812_apply_layer_sync(true);
 
 #endif
 }
