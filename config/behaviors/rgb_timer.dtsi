@@ -1,0 +1,9 @@
+/ {
+    behaviors {
+        rgb_timer: rgb_timer {
+            compatible = "zmk,behavior-rgb-timer";
+            label = "RGB_TIMER";
+            #binding-cells = <1>;
+        };
+    };
+};
