@@ -1,10 +1,12 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
+#include <zmk/behavior.h>
+#include <zmk/behavior_queue.h>
+
 #include <zmk_ws2812_widget/widget.h>
 
 #include <zmk/rgb_underglow.h>
-#include <zmk/behavior_queue.h>
 
 
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
@@ -17,7 +19,7 @@ static bool timer_enabled = true;
 
 static uint32_t timeout_minutes = 15;
 
-
+static void ws2812_idle_broadcast(bool on);
 static void rgb_idle_timer_handler(struct k_timer *timer)
 {
     ARG_UNUSED(timer);
