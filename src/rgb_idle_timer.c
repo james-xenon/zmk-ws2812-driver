@@ -29,7 +29,7 @@ static void rgb_idle_timer_handler(struct k_timer *timer)
     ws2812_idle_broadcast(false);
 }
 
-static void ws2812_idle_broadcast(bool on)
+void ws2812_idle_broadcast(bool on)
 {
     struct zmk_behavior_binding binding = {
 
