@@ -3,7 +3,7 @@
 
 #include <zmk_ws2812_widget/widget.h>
 
-#include <zmk_ws2812_widget/widget.h>
+#include <zmk/rgb_underglow.h>
 
 
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
@@ -27,7 +27,7 @@ static void rgb_idle_timer_handler(struct k_timer *timer)
     }
 
 
-    ws2812_set_indication_enabled(false);
+    zmk_rgb_underglow_off();
 }
 
 
@@ -57,7 +57,7 @@ void ws2812_idle_timer_reset(void)
     }
 
 
-    ws2812_set_indication_enabled(true);
+    zmk_rgb_underglow_on();
 
 
     k_timer_start(
