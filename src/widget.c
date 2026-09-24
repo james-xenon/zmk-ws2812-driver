@@ -1416,7 +1416,12 @@ static void indicator_init_thread(void *d0, void *d1, void *d2) {
         (zmk_hid_indicators_get_current_profile() & HID_LED_CAPS_LOCK_BIT) != 0;
 #endif
 
-    initialized = true;
+initialized = true;
+
+    ws2812_idle_timer_init();
+
+    ws2812_idle_timer_reset();
+
     ws2812_note_activity();
 
     k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
@@ -1451,19 +1456,3 @@ static void indicator_init_thread(void *d0, void *d1, void *d2) {
 
 K_THREAD_DEFINE(ws2812_indicator_init_tid, 1024, indicator_init_thread,
                 NULL, NULL, NULL, K_LOWEST_APPLICATION_THREAD_PRIO, 0, 200);
-
-static int ws2812_idle_start(const struct device *unused)
-{
-    ARG_UNUSED(unused);
-
-    ws2812_idle_timer_init();
-
-    return 0;
-}
-
-
-SYS_INIT(
-    ws2812_idle_start,
-    APPLICATION,
-    CONFIG_APPLICATION_INIT_PRIORITY
-);

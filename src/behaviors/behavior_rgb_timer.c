@@ -7,7 +7,6 @@
 
 #include <zmk/behavior.h>
 
-
 #include <zmk_ws2812_widget/widget.h>
 
 
@@ -60,6 +59,8 @@ static int rgb_timer_released(
 
 
 static const struct behavior_driver_api rgb_timer_api = {
+
+    .locality = BEHAVIOR_LOCALITY_GLOBAL,
 
     .binding_pressed = rgb_timer_pressed,
 
