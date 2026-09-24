@@ -81,3 +81,11 @@ void ws2812_set_persistent_layer_color(uint8_t layer, uint32_t color_hex,
  *        Uses GLOBAL locality via ws2812_lsync behavior so it works on peripheral too.
  */
 void ws2812_set_persistent_layer_active(uint8_t layer, bool active);
+
+void ws2812_idle_timer_reset(void);
+
+void ws2812_idle_timer_toggle(void);
+
+void ws2812_idle_timeout_change(int8_t direction);
+
+bool ws2812_idle_timer_enabled(void);
