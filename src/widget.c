@@ -716,7 +716,6 @@ void ws2812_note_activity(void) {
 
 void ws2812_set_indication_enabled(bool enabled) {
     widget_enabled = enabled;
-    ws2812_note_activity();
 
     if (initialized && device_is_ready(led_strip)) {
         k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);

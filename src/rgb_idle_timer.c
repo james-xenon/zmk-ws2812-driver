@@ -1,7 +1,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
-#include <zmk/rgb_underglow.h>
+#include <zmk_ws2812_widget/widget.h>
 
 #include <zmk_ws2812_widget/widget.h>
 
@@ -27,7 +27,7 @@ static void rgb_idle_timer_handler(struct k_timer *timer)
     }
 
 
-    zmk_rgb_underglow_off();
+    ws2812_set_indication_enabled(false);
 }
 
 
@@ -57,7 +57,7 @@ void ws2812_idle_timer_reset(void)
     }
 
 
-    zmk_rgb_underglow_on();
+    ws2812_set_indication_enabled(true);
 
 
     k_timer_start(
