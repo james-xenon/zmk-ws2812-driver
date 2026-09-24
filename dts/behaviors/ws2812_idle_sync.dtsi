@@ -1,0 +1,10 @@
+/ {
+    behaviors {
+
+        ws2812_idle_sync: ws2812_idle_sync {
+            compatible = "zmk,behavior-ws2812-idle-sync";
+            #binding-cells = <1>;
+        };
+
+    };
+};

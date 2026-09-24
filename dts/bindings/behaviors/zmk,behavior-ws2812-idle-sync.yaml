@@ -1,0 +1,9 @@
+description: WS2812 idle sync
+
+compatible: "zmk,behavior-ws2812-idle-sync"
+
+include: one_param.yaml
+
+properties:
+  "#binding-cells":
+    const: 1
