@@ -89,3 +89,5 @@ void ws2812_idle_timer_toggle(void);
 void ws2812_idle_timeout_change(int8_t direction);
 
 bool ws2812_idle_timer_enabled(void);
+
+void ws2812_idle_timer_init(void);

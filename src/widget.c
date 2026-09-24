@@ -217,7 +217,14 @@ static bool normal_ext_power_was_on = true;
 
 /* Serializes all direct writes to the LED strip and all state transitions that
  * save/restore normal underglow. */
+
 K_MUTEX_DEFINE(ws2812_lighting_mutex);
+
+static struct k_timer idle_timer;
+static bool idle_timer_enabled = true;
+static bool idle_display_off = false;
+static uint32_t idle_timeout_minutes = 15;
+
 
 K_MSGQ_DEFINE(indicator_msgq, sizeof(struct indicator_request), 12, 4);
 
@@ -711,7 +718,113 @@ static bool indication_allowed(bool periodic) {
 
 void ws2812_note_activity(void) {
     last_activity_ms = k_uptime_get();
+
+    if (idle_display_off) {
+        k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
+
+        idle_display_off = false;
+
+        if (static_lighting_needed()) {
+            redraw_static_lighting_locked();
+        }
+
+        k_mutex_unlock(&ws2812_lighting_mutex);
+    }
+
     ws2812_idle_timer_reset();
+}
+
+
+static void idle_timer_handler(struct k_timer *timer)
+{
+    ARG_UNUSED(timer);
+
+    if (!idle_timer_enabled) {
+        return;
+    }
+
+    k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
+
+    idle_display_off = true;
+    buffer_fill((struct led_rgb){0, 0, 0});
+    flush_pixels();
+
+    k_mutex_unlock(&ws2812_lighting_mutex);
+}
+
+
+void ws2812_idle_timer_init(void)
+{
+    k_timer_init(
+        &idle_timer,
+        idle_timer_handler,
+        NULL
+    );
+}
+
+
+void ws2812_idle_timer_reset(void)
+{
+    if (!idle_timer_enabled) {
+        return;
+    }
+
+    k_timer_start(
+        &idle_timer,
+        K_MINUTES(idle_timeout_minutes),
+        K_FOREVER
+    );
+}
+
+
+void ws2812_idle_timer_toggle(void)
+{
+    idle_timer_enabled = !idle_timer_enabled;
+
+    if (idle_timer_enabled) {
+        ws2812_idle_timer_reset();
+    }
+    else {
+        k_timer_stop(&idle_timer);
+    }
+}
+
+
+void ws2812_idle_timeout_change(int8_t direction)
+{
+    if (direction > 0) {
+        idle_timeout_minutes++;
+    }
+    else if (idle_timeout_minutes > 1) {
+        idle_timeout_minutes--;
+    }
+
+    ws2812_idle_timer_reset();
+}
+
+
+bool ws2812_idle_timer_enabled(void)
+{
+    return idle_timer_enabled;
+}
+
+
+void ws2812_idle_sync_off(void)
+{
+#if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW)
+
+    ws2812_apply_layer_sync(0, false);
+
+#endif
+}
+
+void ws2812_idle_sync_on(void)
+{
+#if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW)
+
+    ws2812_apply_layer_sync(0, true);
+
+#endif
 }
 
 void ws2812_set_indication_enabled(bool enabled) {
