@@ -1,26 +1,29 @@
 #include <zephyr/kernel.h>
+
 #include <zmk/event_manager.h>
-#include <zmk/events/keycode_state_changed.h>
+#include <zmk/events/activity_state_changed.h>
+
 #include "widget.h"
 
 
-static bool ws2812_activity_listener_cb(const zmk_event_t *eh)
+static bool ws2812_activity_listener(const zmk_event_t *eh)
 {
-    const struct zmk_keycode_state_changed *ev =
-        as_zmk_keycode_state_changed(eh);
+    const struct zmk_activity_state_changed *ev =
+        as_zmk_activity_state_changed(eh);
 
-    if (ev != NULL && ev->state) {
 
+    if (ev != NULL)
+    {
         ws2812_note_activity();
-
     }
+
 
     return false;
 }
 
 
 ZMK_LISTENER(ws2812_activity_listener,
-             ws2812_activity_listener_cb);
+             ws2812_activity_listener);
 
 ZMK_SUBSCRIPTION(ws2812_activity_listener,
-                 zmk_keycode_state_changed);
+                 zmk_activity_state_changed);

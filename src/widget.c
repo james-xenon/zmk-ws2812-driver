@@ -718,6 +718,8 @@ static bool indication_allowed(bool periodic) {
 
 void ws2812_note_activity(void)
 {
+    k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
+
 
     if (idle_display_off)
     {
@@ -737,6 +739,13 @@ void ws2812_note_activity(void)
         );
 
     }
+
+
+    k_mutex_unlock(&ws2812_lighting_mutex);
+
+
+    ws2812_idle_timer_reset();
+}
 
 
     ws2812_idle_timer_reset();
