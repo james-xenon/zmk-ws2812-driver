@@ -727,6 +727,9 @@ void ws2812_note_activity(void) {
         if (static_lighting_needed()) {
             redraw_static_lighting_locked();
         }
+        else {
+            flush_pixels();
+        }
 
         k_mutex_unlock(&ws2812_lighting_mutex);
     }
@@ -746,8 +749,16 @@ static void idle_timer_handler(struct k_timer *timer)
     k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
 
     idle_display_off = true;
-    buffer_fill((struct led_rgb){0, 0, 0});
-    flush_pixels();
+
+    for (int i = 0; i < WS2812_NUM_PIXELS; i++) {
+        output_pixels[i] = (struct led_rgb){0, 0, 0};
+    }
+
+    led_strip_update_rgb(
+        led_strip,
+        output_pixels,
+        WS2812_NUM_PIXELS
+    );
 
     k_mutex_unlock(&ws2812_lighting_mutex);
 }
