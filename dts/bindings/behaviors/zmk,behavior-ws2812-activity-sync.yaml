@@ -2,4 +2,4 @@ description: WS2812 split activity synchronization behavior
 
 compatible: "zmk,behavior-ws2812-activity-sync"
 
-include: zero_param.yaml
+include: one_param.yaml

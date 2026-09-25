@@ -221,7 +221,7 @@ static bool normal_ext_power_was_on = true;
 
 K_MUTEX_DEFINE(ws2812_lighting_mutex);
 
-static struct k_timer idle_timer;
+static struct k_work_delayable idle_work;
 static bool idle_timer_enabled = true;
 static bool idle_display_off = false;
 static uint32_t idle_timeout_minutes = 1;
@@ -717,135 +717,156 @@ static bool indication_allowed(bool periodic) {
     return true;
 }
 
-void ws2812_note_activity(void)
-{
-    last_activity_ms = k_uptime_get();
+static void ws2812_set_idle_display_local(bool off) {
+    if (!initialized || !device_is_ready(led_strip)) {
+        idle_display_off = off;
+        return;
+    }
 
     k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
 
-    if (idle_display_off) {
-        idle_display_off = false;
-
-        /* pixels[] stores the logical color. Re-apply widget brightness
-         * instead of copying raw RGB values directly to the strip. */
-        flush_pixels();
+    if (off) {
+        if (!idle_display_off) {
+            idle_display_off = true;
+            for (int i = 0; i < WS2812_NUM_PIXELS; i++) {
+                output_pixels[i] = (struct led_rgb){0, 0, 0};
+            }
+            led_strip_update_rgb(led_strip, output_pixels, WS2812_NUM_PIXELS);
+        }
+    } else {
+        if (idle_display_off) {
+            idle_display_off = false;
+            /* pixels[] keeps the logical static/indicator state. Re-apply the
+             * configured widget brightness when waking the strip. */
+            flush_pixels();
+        }
     }
 
     k_mutex_unlock(&ws2812_lighting_mutex);
+}
+
+void ws2812_apply_idle_sync(bool off) {
+    ws2812_set_idle_display_local(off);
+}
+
+#if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+#if !DT_NODE_EXISTS(DT_NODELABEL(ws2812_async))
+#error "ws2812_async behavior node not found: add #include <behaviors/ws2812_activity_sync.dtsi> to the keymap"
+#endif
+
+static void forward_idle_state_to_all_halves(bool off) {
+    struct zmk_behavior_binding binding = {
+        .behavior_dev = DEVICE_DT_NAME(DT_NODELABEL(ws2812_async)),
+        .param1 = off ? 1 : 0,
+        .param2 = 0,
+    };
+
+    struct zmk_behavior_binding_event event = {
+        .position = 0,
+        .timestamp = k_uptime_get(),
+    };
+
+    /* GLOBAL locality executes this command on central and peripheral. */
+    zmk_behavior_queue_add(&event, binding, true, 0);
+}
+#endif
+
+void ws2812_note_activity(void) {
+    last_activity_ms = k_uptime_get();
+
+    /* Always wake the local half immediately. On split central, the key/activity
+     * listeners below mirror this wake to the peripheral when required. */
+    ws2812_set_idle_display_local(false);
 
     ws2812_idle_timer_reset();
 }
 
-static void idle_timer_handler(struct k_timer *timer)
-{
-    ARG_UNUSED(timer);
+static void idle_work_handler(struct k_work *work) {
+    ARG_UNUSED(work);
 
-    k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
-
-
-    /*
-     * Idle выключает только обычный статический вывод.
-     * Очередь индикации (battery/layer/connectivity)
-     * работает отдельно и имеет собственное восстановление.
-     */
-
-    idle_display_off = true;
-
-
-    for (int i = 0; i < WS2812_NUM_PIXELS; i++) {
-
-        output_pixels[i] = (struct led_rgb){0,0,0};
-
-    }
-
-
-    led_strip_update_rgb(
-        led_strip,
-        output_pixels,
-        WS2812_NUM_PIXELS
-    );
-
-
-    k_mutex_unlock(&ws2812_lighting_mutex);
-}
-
-
-void ws2812_idle_timer_init(void)
-{
-    k_timer_init(
-        &idle_timer,
-        idle_timer_handler,
-        NULL
-    );
-}
-
-
-void ws2812_idle_timer_reset(void)
-{
     if (!idle_timer_enabled) {
         return;
     }
 
-    k_timer_stop(&idle_timer);
+#if !IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+    /* Guard against a key arriving while an already-due work item is starting.
+     * If activity was recorded more recently, reschedule only the remaining time
+     * instead of blanking the LEDs after that new key press. */
+    int64_t timeout_ms = (int64_t)idle_timeout_minutes * 60LL * 1000LL;
+    int64_t elapsed_ms = k_uptime_get() - last_activity_ms;
+    if (last_activity_ms > 0 && elapsed_ms < timeout_ms) {
+        k_work_reschedule(&idle_work, K_MSEC(timeout_ms - elapsed_ms));
+        return;
+    }
+#endif
 
-    k_timer_start(
-        &idle_timer,
-        K_SECONDS(idle_timeout_minutes * 60),
-        K_FOREVER
-    );
+#if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+    /* Central owns the timeout. One GLOBAL command turns both halves off at the
+     * same moment, so the two halves can no longer drift apart. */
+    forward_idle_state_to_all_halves(true);
+#elif !IS_ENABLED(CONFIG_ZMK_SPLIT)
+    ws2812_set_idle_display_local(true);
+#else
+    /* Peripheral has no independent timeout. It follows central. */
+#endif
 }
 
+void ws2812_idle_timer_init(void) {
+#if !IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+    k_work_init_delayable(&idle_work, idle_work_handler);
+#endif
+}
 
-void ws2812_idle_timer_toggle(void)
-{
+void ws2812_idle_timer_reset(void) {
+#if !IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+    if (!idle_timer_enabled) {
+        return;
+    }
+
+    k_work_reschedule(&idle_work, K_MINUTES(idle_timeout_minutes));
+#endif
+}
+
+void ws2812_idle_timer_toggle(void) {
+#if !IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
     idle_timer_enabled = !idle_timer_enabled;
 
     if (idle_timer_enabled) {
         ws2812_idle_timer_reset();
+    } else {
+        k_work_cancel_delayable(&idle_work);
+
+        /* Disabling the timer means lighting should remain available. If the
+         * timeout had already blanked the LEDs, wake both halves now. */
+#if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+        forward_idle_state_to_all_halves(false);
+#else
+        ws2812_set_idle_display_local(false);
+#endif
     }
-    else {
-        k_timer_stop(&idle_timer);
-    }
+
+    LOG_INF("WS2812 idle timer %s (%u min)", idle_timer_enabled ? "ON" : "OFF",
+            idle_timeout_minutes);
+#endif
 }
 
-
-void ws2812_idle_timeout_change(int8_t direction)
-{
+void ws2812_idle_timeout_change(int8_t direction) {
+#if !IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
     if (direction > 0) {
-        idle_timeout_minutes++;
+        if (idle_timeout_minutes < 60U) {
+            idle_timeout_minutes++;
+        }
+    } else if (direction < 0 && idle_timeout_minutes > 1U) {
+        idle_timeout_minutes--;
     }
-    else if (idle_timeout_minutes > 1)
-    {
-    idle_timeout_minutes--;
-}
 
     ws2812_idle_timer_reset();
+    LOG_INF("WS2812 idle timeout: %u min", idle_timeout_minutes);
+#endif
 }
 
-
-bool ws2812_idle_timer_enabled(void)
-{
+bool ws2812_idle_timer_enabled(void) {
     return idle_timer_enabled;
-}
-
-
-void ws2812_idle_sync_off(void)
-{
-#if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW)
-
-    ws2812_apply_layer_sync(false);
-
-#endif
-}
-
-
-void ws2812_idle_sync_on(void)
-{
-#if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW)
-
-    ws2812_apply_layer_sync(true);
-
-#endif
 }
 
 void ws2812_set_indication_enabled(bool enabled) {
@@ -1341,58 +1362,26 @@ void ws2812_indicate_connectivity(void) {
 }
 
 /* -------------------------------------------------------------------------
- * Activity/sleep + split activity synchronization
+ * Activity/sleep + split wake synchronization
  * ------------------------------------------------------------------------- */
 
-#if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
-#if !DT_NODE_EXISTS(DT_NODELABEL(ws2812_async))
-#error "ws2812_async behavior node not found: add #include <behaviors/ws2812_activity_sync.dtsi> to the keymap"
-#endif
-
-/* Sending a split command for every central key press is unnecessary.
- * A short heartbeat keeps the peripheral timer refreshed while typing,
- * while the first key after an idle period still synchronizes immediately. */
-#define WS2812_ACTIVITY_SYNC_INTERVAL_MS 10000U
-static int64_t last_activity_sync_ms;
-
-static void forward_activity_to_all_halves(void) {
-    struct zmk_behavior_binding binding = {
-        .behavior_dev = DEVICE_DT_NAME(DT_NODELABEL(ws2812_async)),
-        .param1 = 0,
-        .param2 = 0,
-    };
-
-    struct zmk_behavior_binding_event event = {
-        .position = 0,
-        .timestamp = k_uptime_get(),
-    };
-
-    /* The activity-sync behavior is stateless; press is sufficient. */
-    zmk_behavior_queue_add(&event, binding, true, 0);
-}
-#endif
-
-/* Every physical key press resets the custom WS2812 idle timer.
- * On a peripheral, the local event resets that half immediately.
- * The same peripheral event is also forwarded by ZMK to the central, so the
- * central timer resets too. For keys originating on the central half, a
- * throttled GLOBAL behavior refreshes the peripheral timer. */
+/* Every physical key press wakes the local half immediately. The central build
+ * receives BOTH local and peripheral key-position events, so it is the single
+ * authority that resets the one-minute timeout for the complete keyboard.
+ * A GLOBAL wake is sent only when the central knows the keyboard was blanked;
+ * there is no per-key BLE heartbeat and therefore no timer drift. */
 static int key_activity_listener_cb(const zmk_event_t *eh) {
     const struct zmk_position_state_changed *ev = as_zmk_position_state_changed(eh);
     if (ev == NULL || !ev->state) {
         return ZMK_EV_EVENT_BUBBLE;
     }
 
+    bool was_off = idle_display_off;
     ws2812_note_activity();
 
 #if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
-    if (ev->source == ZMK_POSITION_STATE_CHANGE_SOURCE_LOCAL) {
-        int64_t now = k_uptime_get();
-        if (last_activity_sync_ms == 0 ||
-            now - last_activity_sync_ms >= WS2812_ACTIVITY_SYNC_INTERVAL_MS) {
-            last_activity_sync_ms = now;
-            forward_activity_to_all_halves();
-        }
+    if (was_off) {
+        forward_idle_state_to_all_halves(false);
     }
 #endif
 
@@ -1402,8 +1391,8 @@ static int key_activity_listener_cb(const zmk_event_t *eh) {
 ZMK_LISTENER(ws2812_key_activity_listener, key_activity_listener_cb);
 ZMK_SUBSCRIPTION(ws2812_key_activity_listener, zmk_position_state_changed);
 
-/* ZMK activity-state changes are still used for sleep/wake handling and for
- * non-key activity (for example pointing input). */
+/* ZMK activity-state changes cover non-key activity (e.g. pointing input) and
+ * normal sleep/wake transitions. They use the same central-authoritative timer. */
 static int activity_listener_cb(const zmk_event_t *eh) {
     const struct zmk_activity_state_changed *ev = as_zmk_activity_state_changed(eh);
     if (ev == NULL) {
@@ -1411,17 +1400,13 @@ static int activity_listener_cb(const zmk_event_t *eh) {
     }
 
     if (ev->state == ZMK_ACTIVITY_ACTIVE) {
+        bool was_off = idle_display_off;
         activity_active = true;
         ws2812_note_activity();
 
 #if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
-        /* Covers wake-ups caused by non-key activity as well as the first
-         * transition from IDLE to ACTIVE. */
-        int64_t now = k_uptime_get();
-        if (last_activity_sync_ms == 0 ||
-            now - last_activity_sync_ms >= WS2812_ACTIVITY_SYNC_INTERVAL_MS) {
-            last_activity_sync_ms = now;
-            forward_activity_to_all_halves();
+        if (was_off) {
+            forward_idle_state_to_all_halves(false);
         }
 #endif
 
@@ -1433,12 +1418,7 @@ static int activity_listener_cb(const zmk_event_t *eh) {
         }
     } else if (ev->state == ZMK_ACTIVITY_SLEEP) {
         activity_active = false;
-
-        if (initialized && device_is_ready(led_strip)) {
-            k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
-            set_all_pixels((struct led_rgb){0, 0, 0});
-            k_mutex_unlock(&ws2812_lighting_mutex);
-        }
+        ws2812_set_idle_display_local(true);
     }
 
     return ZMK_EV_EVENT_BUBBLE;

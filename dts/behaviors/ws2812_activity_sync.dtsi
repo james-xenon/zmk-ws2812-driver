@@ -2,7 +2,7 @@
     behaviors {
         ws2812_async: wsactivity {
             compatible = "zmk,behavior-ws2812-activity-sync";
-            #binding-cells = <0>;
+            #binding-cells = <1>;
         };
     };
 };

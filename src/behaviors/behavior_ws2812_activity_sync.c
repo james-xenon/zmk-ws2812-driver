@@ -1,6 +1,7 @@
 #define DT_DRV_COMPAT zmk_behavior_ws2812_activity_sync
 
 #include <zephyr/device.h>
+#include <zephyr/sys/util.h>
 
 #include <drivers/behavior.h>
 #include <zmk/behavior.h>
@@ -14,16 +15,18 @@ static int behavior_ws2812_activity_sync_init(const struct device *dev)
 }
 
 
-/*
- * GLOBAL behavior:
- * нажали на одной половине ->
- * ZMK выполнит его на central и peripheral.
- */
+/* GLOBAL split display synchronization.
+ * param1 = 0 wakes the WS2812 display; param1 = 1 blanks it for idle.
+ * GLOBAL locality executes the command on central and every peripheral. */
 static int on_keymap_binding_pressed(
     struct zmk_behavior_binding *binding,
     struct zmk_behavior_binding_event event)
 {
-    ws2812_note_activity();
+    ARG_UNUSED(event);
+
+    /* param1: 0 = wake, 1 = idle/off. GLOBAL locality applies the same
+     * display state to central and every peripheral. */
+    ws2812_apply_idle_sync(binding->param1 != 0);
 
     return ZMK_BEHAVIOR_OPAQUE;
 }
@@ -33,6 +36,8 @@ static int on_keymap_binding_released(
     struct zmk_behavior_binding *binding,
     struct zmk_behavior_binding_event event)
 {
+    ARG_UNUSED(binding);
+    ARG_UNUSED(event);
     return ZMK_BEHAVIOR_OPAQUE;
 }
 

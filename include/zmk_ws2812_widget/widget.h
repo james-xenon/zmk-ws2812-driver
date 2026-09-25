@@ -91,3 +91,6 @@ void ws2812_idle_timeout_change(int8_t direction);
 bool ws2812_idle_timer_enabled(void);
 
 void ws2812_idle_timer_init(void);
+/** @brief Apply split idle display state locally. off=true blanks LEDs; false wakes them. */
+void ws2812_apply_idle_sync(bool off);
+
