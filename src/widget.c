@@ -751,25 +751,31 @@ static void idle_timer_handler(struct k_timer *timer)
 {
     ARG_UNUSED(timer);
 
-    if (!idle_timer_enabled) {
-        return;
-    }
-
     k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
+
+
+    /*
+     * Idle выключает только обычный статический вывод.
+     * Очередь индикации (battery/layer/connectivity)
+     * работает отдельно и имеет собственное восстановление.
+     */
 
     idle_display_off = true;
 
+
     for (int i = 0; i < WS2812_NUM_PIXELS; i++) {
 
-    output_pixels[i] = (struct led_rgb){0,0,0};
+        output_pixels[i] = (struct led_rgb){0,0,0};
 
     }
+
 
     led_strip_update_rgb(
         led_strip,
         output_pixels,
         WS2812_NUM_PIXELS
     );
+
 
     k_mutex_unlock(&ws2812_lighting_mutex);
 }
