@@ -1367,7 +1367,7 @@ static int activity_listener_cb(const zmk_event_t *eh) {
     ws2812_note_activity();
 
 
-#if IS_ENABLED(CONFIG_ZMK_SPLIT)
+#if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
 
     if (DT_NODE_EXISTS(DT_NODELABEL(ws2812_async))) {
 
@@ -1392,25 +1392,16 @@ static int activity_listener_cb(const zmk_event_t *eh) {
 #endif
 
 
-    if (initialized && device_is_ready(led_strip) && static_lighting_needed()) {
+if (initialized && device_is_ready(led_strip) && static_lighting_needed()) {
 
-        if (initialized && device_is_ready(led_strip) && static_lighting_needed()) {
-            k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
-            /* Ext power may have been cut externally while sleeping. Ensure it
-             * is available, but do not overwrite the original pre-static state. */
-            enable_ext_power_if_needed();
-            redraw_static_lighting_locked();
-            k_mutex_unlock(&ws2812_lighting_mutex);
-        }
-    } else if (ev->state == ZMK_ACTIVITY_SLEEP) {
-        activity_active = false;
+    k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
 
-        if (initialized && device_is_ready(led_strip)) {
-            k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
-            set_all_pixels((struct led_rgb){0, 0, 0});
-            k_mutex_unlock(&ws2812_lighting_mutex);
-        }
-    }
+    enable_ext_power_if_needed();
+
+    redraw_static_lighting_locked();
+
+    k_mutex_unlock(&ws2812_lighting_mutex);
+}
 
     return 0;
 }
