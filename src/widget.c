@@ -781,9 +781,11 @@ void ws2812_idle_timer_reset(void)
         return;
     }
 
+    k_timer_stop(&idle_timer);
+
     k_timer_start(
         &idle_timer,
-        K_MINUTES(idle_timeout_minutes),
+        K_SECONDS(idle_timeout_minutes * 60),
         K_FOREVER
     );
 }
