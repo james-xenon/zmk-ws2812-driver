@@ -747,17 +747,6 @@ void ws2812_note_activity(void)
     ws2812_idle_timer_reset();
 }
 
-
-    ws2812_idle_timer_reset();
-
-}
-
-    k_mutex_unlock(&ws2812_lighting_mutex);
-
-    ws2812_idle_timer_reset();
-}
-
-
 static void idle_timer_handler(struct k_timer *timer)
 {
     ARG_UNUSED(timer);
