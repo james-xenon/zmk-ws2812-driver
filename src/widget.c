@@ -716,21 +716,32 @@ static bool indication_allowed(bool periodic) {
     return true;
 }
 
-void ws2812_note_activity(void) {
-    last_activity_ms = k_uptime_get();
+void ws2812_note_activity(void)
+{
 
-    k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
+    if (idle_display_off)
+    {
 
-    if (idle_display_off) {
         idle_display_off = false;
 
-        if (static_lighting_needed()) {
-            redraw_static_lighting_locked();
-        }
-        else {
-            flush_pixels();
-        }
+
+        memcpy(output_pixels,
+               pixels,
+               sizeof(pixels));
+
+
+        led_strip_update_rgb(
+            led_strip,
+            output_pixels,
+            WS2812_NUM_PIXELS
+        );
+
     }
+
+
+    ws2812_idle_timer_reset();
+
+}
 
     k_mutex_unlock(&ws2812_lighting_mutex);
 
@@ -751,8 +762,9 @@ static void idle_timer_handler(struct k_timer *timer)
     idle_display_off = true;
 
     for (int i = 0; i < WS2812_NUM_PIXELS; i++) {
-        pixels[i] = (struct led_rgb){0, 0, 0};
-        output_pixels[i] = (struct led_rgb){0, 0, 0};
+
+    output_pixels[i] = (struct led_rgb){0,0,0};
+
     }
 
     led_strip_update_rgb(
@@ -809,9 +821,10 @@ void ws2812_idle_timeout_change(int8_t direction)
     if (direction > 0) {
         idle_timeout_minutes++;
     }
-    else if (idle_timeout_minutes > 1) {
-        idle_timeout_minutes--;
-    }
+    else if (idle_timeout_minutes > 1)
+    {
+    idle_timeout_minutes--;
+}
 
     ws2812_idle_timer_reset();
 }

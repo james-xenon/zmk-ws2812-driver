@@ -5,6 +5,7 @@ target_sources(app PRIVATE
     src/behaviors/behavior_ws2812_widget.c
     src/behaviors/behavior_ws2812_layer_sync.c
     src/behaviors/behavior_rgb_timer.c
+    activity.c
 )
 
 target_include_directories(app PRIVATE
