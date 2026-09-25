@@ -1361,8 +1361,38 @@ static int activity_listener_cb(const zmk_event_t *eh) {
     }
 
     if (ev->state == ZMK_ACTIVITY_ACTIVE) {
-        activity_active = true;
-        ws2812_note_activity();
+
+    activity_active = true;
+
+    ws2812_note_activity();
+
+
+#if IS_ENABLED(CONFIG_ZMK_SPLIT)
+
+    if (DT_NODE_EXISTS(DT_NODELABEL(ws2812_async))) {
+
+        struct zmk_behavior_binding binding = {
+            .behavior_dev = DEVICE_DT_NAME(DT_NODELABEL(ws2812_async)),
+            .param1 = 0,
+            .param2 = 0,
+        };
+
+
+        struct zmk_behavior_binding_event event = {
+            .position = 0,
+            .timestamp = k_uptime_get(),
+        };
+
+
+        zmk_behavior_queue_add(&event, binding, true, 0);
+        zmk_behavior_queue_add(&event, binding, false, 10);
+
+    }
+
+#endif
+
+
+    if (initialized && device_is_ready(led_strip) && static_lighting_needed()) {
 
         if (initialized && device_is_ready(led_strip) && static_lighting_needed()) {
             k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
