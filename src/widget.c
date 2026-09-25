@@ -30,6 +30,7 @@
 #include <zmk/behavior.h>
 #include <zmk/behavior_queue.h>
 #include <zmk/events/activity_state_changed.h>
+#include <zmk/events/position_state_changed.h>
 
 #if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING)
 #include <zmk/battery.h>
@@ -718,31 +719,19 @@ static bool indication_allowed(bool periodic) {
 
 void ws2812_note_activity(void)
 {
+    last_activity_ms = k_uptime_get();
+
     k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
 
-
-    if (idle_display_off)
-    {
-
+    if (idle_display_off) {
         idle_display_off = false;
 
-
-        memcpy(output_pixels,
-               pixels,
-               sizeof(pixels));
-
-
-        led_strip_update_rgb(
-            led_strip,
-            output_pixels,
-            WS2812_NUM_PIXELS
-        );
-
+        /* pixels[] stores the logical color. Re-apply widget brightness
+         * instead of copying raw RGB values directly to the strip. */
+        flush_pixels();
     }
 
-
     k_mutex_unlock(&ws2812_lighting_mutex);
-
 
     ws2812_idle_timer_reset();
 }
@@ -1352,58 +1341,107 @@ void ws2812_indicate_connectivity(void) {
 }
 
 /* -------------------------------------------------------------------------
- * Activity/sleep
+ * Activity/sleep + split activity synchronization
  * ------------------------------------------------------------------------- */
-static int activity_listener_cb(const zmk_event_t *eh) {
-    const struct zmk_activity_state_changed *ev = as_zmk_activity_state_changed(eh);
-    if (ev == NULL) {
-        return 0;
+
+#if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+#if !DT_NODE_EXISTS(DT_NODELABEL(ws2812_async))
+#error "ws2812_async behavior node not found: add #include <behaviors/ws2812_activity_sync.dtsi> to the keymap"
+#endif
+
+/* Sending a split command for every central key press is unnecessary.
+ * A short heartbeat keeps the peripheral timer refreshed while typing,
+ * while the first key after an idle period still synchronizes immediately. */
+#define WS2812_ACTIVITY_SYNC_INTERVAL_MS 10000U
+static int64_t last_activity_sync_ms;
+
+static void forward_activity_to_all_halves(void) {
+    struct zmk_behavior_binding binding = {
+        .behavior_dev = DEVICE_DT_NAME(DT_NODELABEL(ws2812_async)),
+        .param1 = 0,
+        .param2 = 0,
+    };
+
+    struct zmk_behavior_binding_event event = {
+        .position = 0,
+        .timestamp = k_uptime_get(),
+    };
+
+    /* The activity-sync behavior is stateless; press is sufficient. */
+    zmk_behavior_queue_add(&event, binding, true, 0);
+}
+#endif
+
+/* Every physical key press resets the custom WS2812 idle timer.
+ * On a peripheral, the local event resets that half immediately.
+ * The same peripheral event is also forwarded by ZMK to the central, so the
+ * central timer resets too. For keys originating on the central half, a
+ * throttled GLOBAL behavior refreshes the peripheral timer. */
+static int key_activity_listener_cb(const zmk_event_t *eh) {
+    const struct zmk_position_state_changed *ev = as_zmk_position_state_changed(eh);
+    if (ev == NULL || !ev->state) {
+        return ZMK_EV_EVENT_BUBBLE;
     }
-
-    if (ev->state == ZMK_ACTIVITY_ACTIVE) {
-
-    activity_active = true;
 
     ws2812_note_activity();
 
-
 #if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
-
-    if (DT_NODE_EXISTS(DT_NODELABEL(ws2812_async))) {
-
-        struct zmk_behavior_binding binding = {
-            .behavior_dev = DEVICE_DT_NAME(DT_NODELABEL(ws2812_async)),
-            .param1 = 0,
-            .param2 = 0,
-        };
-
-
-        struct zmk_behavior_binding_event event = {
-            .position = 0,
-            .timestamp = k_uptime_get(),
-        };
-
-
-        zmk_behavior_queue_add(&event, binding, true, 0);
-        zmk_behavior_queue_add(&event, binding, false, 10);
-
+    if (ev->source == ZMK_POSITION_STATE_CHANGE_SOURCE_LOCAL) {
+        int64_t now = k_uptime_get();
+        if (last_activity_sync_ms == 0 ||
+            now - last_activity_sync_ms >= WS2812_ACTIVITY_SYNC_INTERVAL_MS) {
+            last_activity_sync_ms = now;
+            forward_activity_to_all_halves();
+        }
     }
-
 #endif
 
-
-if (initialized && device_is_ready(led_strip) && static_lighting_needed()) {
-
-    k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
-
-    enable_ext_power_if_needed();
-
-    redraw_static_lighting_locked();
-
-    k_mutex_unlock(&ws2812_lighting_mutex);
+    return ZMK_EV_EVENT_BUBBLE;
 }
 
-    return 0;
+ZMK_LISTENER(ws2812_key_activity_listener, key_activity_listener_cb);
+ZMK_SUBSCRIPTION(ws2812_key_activity_listener, zmk_position_state_changed);
+
+/* ZMK activity-state changes are still used for sleep/wake handling and for
+ * non-key activity (for example pointing input). */
+static int activity_listener_cb(const zmk_event_t *eh) {
+    const struct zmk_activity_state_changed *ev = as_zmk_activity_state_changed(eh);
+    if (ev == NULL) {
+        return ZMK_EV_EVENT_BUBBLE;
+    }
+
+    if (ev->state == ZMK_ACTIVITY_ACTIVE) {
+        activity_active = true;
+        ws2812_note_activity();
+
+#if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+        /* Covers wake-ups caused by non-key activity as well as the first
+         * transition from IDLE to ACTIVE. */
+        int64_t now = k_uptime_get();
+        if (last_activity_sync_ms == 0 ||
+            now - last_activity_sync_ms >= WS2812_ACTIVITY_SYNC_INTERVAL_MS) {
+            last_activity_sync_ms = now;
+            forward_activity_to_all_halves();
+        }
+#endif
+
+        if (initialized && device_is_ready(led_strip) && static_lighting_needed()) {
+            k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
+            enable_ext_power_if_needed();
+            redraw_static_lighting_locked();
+            k_mutex_unlock(&ws2812_lighting_mutex);
+        }
+    } else if (ev->state == ZMK_ACTIVITY_SLEEP) {
+        activity_active = false;
+
+        if (initialized && device_is_ready(led_strip)) {
+            k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
+            set_all_pixels((struct led_rgb){0, 0, 0});
+            k_mutex_unlock(&ws2812_lighting_mutex);
+        }
+    }
+
+    return ZMK_EV_EVENT_BUBBLE;
 }
 
 ZMK_LISTENER(ws2812_activity_listener, activity_listener_cb);
