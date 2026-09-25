@@ -223,7 +223,7 @@ K_MUTEX_DEFINE(ws2812_lighting_mutex);
 static struct k_timer idle_timer;
 static bool idle_timer_enabled = true;
 static bool idle_display_off = false;
-static uint32_t idle_timeout_minutes = 15;
+static uint32_t idle_timeout_minutes = 1;
 
 
 K_MSGQ_DEFINE(indicator_msgq, sizeof(struct indicator_request), 12, 4);
@@ -719,9 +719,9 @@ static bool indication_allowed(bool periodic) {
 void ws2812_note_activity(void) {
     last_activity_ms = k_uptime_get();
 
-    if (idle_display_off) {
-        k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
+    k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
 
+    if (idle_display_off) {
         idle_display_off = false;
 
         if (static_lighting_needed()) {
@@ -730,9 +730,9 @@ void ws2812_note_activity(void) {
         else {
             flush_pixels();
         }
-
-        k_mutex_unlock(&ws2812_lighting_mutex);
     }
+
+    k_mutex_unlock(&ws2812_lighting_mutex);
 
     ws2812_idle_timer_reset();
 }
@@ -751,6 +751,7 @@ static void idle_timer_handler(struct k_timer *timer)
     idle_display_off = true;
 
     for (int i = 0; i < WS2812_NUM_PIXELS; i++) {
+        pixels[i] = (struct led_rgb){0, 0, 0};
         output_pixels[i] = (struct led_rgb){0, 0, 0};
     }
 
