@@ -221,7 +221,9 @@ static bool normal_ext_power_was_on = true;
 
 K_MUTEX_DEFINE(ws2812_lighting_mutex);
 
-static struct k_work_delayable idle_work;
+static void idle_work_handler(struct k_work *work);
+K_WORK_DELAYABLE_DEFINE(idle_work, idle_work_handler);
+
 static bool idle_timer_enabled = true;
 static bool idle_display_off = false;
 static uint32_t idle_timeout_minutes = 1;
@@ -766,8 +768,14 @@ static void forward_idle_state_to_all_halves(bool off) {
         .timestamp = k_uptime_get(),
     };
 
-    /* GLOBAL locality executes this command on central and peripheral. */
-    zmk_behavior_queue_add(&event, binding, true, 0);
+    /* GLOBAL locality executes this command on central and peripheral.
+     * Queue both edges, matching the already proven layer-sync path. */
+    int rc = zmk_behavior_queue_add(&event, binding, true, 0);
+    if (rc == 0) {
+        zmk_behavior_queue_add(&event, binding, false, 10);
+    } else {
+        LOG_WRN("WS2812 idle sync queue full: %d", rc);
+    }
 }
 #endif
 
@@ -803,6 +811,7 @@ static void idle_work_handler(struct k_work *work) {
 #if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
     /* Central owns the timeout. One GLOBAL command turns both halves off at the
      * same moment, so the two halves can no longer drift apart. */
+    LOG_INF("WS2812 idle timeout fired after %u min", idle_timeout_minutes);
     forward_idle_state_to_all_halves(true);
 #elif !IS_ENABLED(CONFIG_ZMK_SPLIT)
     ws2812_set_idle_display_local(true);
@@ -812,9 +821,9 @@ static void idle_work_handler(struct k_work *work) {
 }
 
 void ws2812_idle_timer_init(void) {
-#if !IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
-    k_work_init_delayable(&idle_work, idle_work_handler);
-#endif
+    /* idle_work is statically initialized with K_WORK_DELAYABLE_DEFINE.
+     * This avoids a boot-time race where activity listeners could try to
+     * reschedule the work before the delayed init thread initialized it. */
 }
 
 void ws2812_idle_timer_reset(void) {
@@ -824,6 +833,7 @@ void ws2812_idle_timer_reset(void) {
     }
 
     k_work_reschedule(&idle_work, K_MINUTES(idle_timeout_minutes));
+    LOG_DBG("WS2812 idle timer reset: %u min", idle_timeout_minutes);
 #endif
 }
 
@@ -860,8 +870,12 @@ void ws2812_idle_timeout_change(int8_t direction) {
         idle_timeout_minutes--;
     }
 
+    /* Changing the timeout is an explicit request to use the timer.
+     * If it had previously been toggled OFF, +/- turns it back ON and starts
+     * a fresh full interval from this key press. */
+    idle_timer_enabled = true;
     ws2812_idle_timer_reset();
-    LOG_INF("WS2812 idle timeout: %u min", idle_timeout_minutes);
+    LOG_INF("WS2812 idle timeout: %u min (timer ON)", idle_timeout_minutes);
 #endif
 }
 
