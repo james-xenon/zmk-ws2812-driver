@@ -64,8 +64,9 @@ config WS2812_WIDGET_USE_RGB_UNDERGLOW_OVERLAY_API
     depends on ZMK_RGB_UNDERGLOW
     default n
     help
-      Kept only so old configs do not fail. This driver-only version does not use
-      zmk_rgb_underglow_overlay_suspend()/resume().
+      Use zmk_rgb_underglow_overlay_suspend()/resume() when the keyboard
+      provides the optional patched underglow API. This pauses rendering
+      without changing or persisting the user's RGB on/off state.
 
 config WS2812_WIDGET_USE_EXT_POWER
     bool "Temporarily enable external power for WS2812 indications"

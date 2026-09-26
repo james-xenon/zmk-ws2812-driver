@@ -39,6 +39,13 @@
 
 #if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW)
 #include <zmk/rgb_underglow.h>
+
+#if IS_ENABLED(CONFIG_WS2812_WIDGET_USE_RGB_UNDERGLOW_OVERLAY_API)
+/* Implemented by the RGB underglow patch used by this keyboard.
+ * These calls pause/resume rendering without changing the persisted RGB on/off state. */
+int zmk_rgb_underglow_overlay_suspend(void);
+int zmk_rgb_underglow_overlay_resume(void);
+#endif
 #endif
 
 #if IS_ENABLED(CONFIG_ZMK_EXT_POWER)
@@ -224,9 +231,10 @@ K_MUTEX_DEFINE(ws2812_lighting_mutex);
 static void idle_work_handler(struct k_work *work);
 K_WORK_DELAYABLE_DEFINE(idle_work, idle_work_handler);
 
-static bool idle_timer_enabled = true;
+static bool idle_timer_enabled = IS_ENABLED(CONFIG_WS2812_IDLE_TIMER);
 static bool idle_display_off = false;
-static uint32_t idle_timeout_minutes = 1;
+static bool idle_underglow_suspended = false;
+static uint32_t idle_timeout_minutes = CONFIG_WS2812_IDLE_TIMEOUT_MINUTES;
 
 
 K_MSGQ_DEFINE(indicator_msgq, sizeof(struct indicator_request), 12, 4);
@@ -400,7 +408,11 @@ static bool pause_underglow_if_needed(void) {
     bool was_on = false;
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_PAUSE_RGB_UNDERGLOW) && IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW)
     if (zmk_rgb_underglow_get_state(&was_on) == 0 && was_on) {
+#if IS_ENABLED(CONFIG_WS2812_WIDGET_USE_RGB_UNDERGLOW_OVERLAY_API)
+        zmk_rgb_underglow_overlay_suspend();
+#else
         zmk_rgb_underglow_off();
+#endif
         k_sleep(K_MSEC(CONFIG_WS2812_WIDGET_UNDERGLOW_OFF_DELAY_MS));
     }
 #endif
@@ -411,7 +423,11 @@ static void restore_underglow_if_needed(bool was_on) {
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_PAUSE_RGB_UNDERGLOW) && IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW)
     if (was_on) {
         k_sleep(K_MSEC(CONFIG_WS2812_WIDGET_UNDERGLOW_RESTORE_DELAY_MS));
+#if IS_ENABLED(CONFIG_WS2812_WIDGET_USE_RGB_UNDERGLOW_OVERLAY_API)
+        zmk_rgb_underglow_overlay_resume();
+#else
         zmk_rgb_underglow_on();
+#endif
         return;
     }
 #else
@@ -710,7 +726,7 @@ static bool periodic_indication_allowed(void) {
 }
 
 static bool indication_allowed(bool periodic) {
-    if (!initialized || !widget_enabled || !activity_active) {
+    if (!initialized || !widget_enabled || !activity_active || idle_display_off) {
         return false;
     }
     if (periodic && !periodic_indication_allowed()) {
@@ -730,6 +746,17 @@ static void ws2812_set_idle_display_local(bool off) {
     if (off) {
         if (!idle_display_off) {
             idle_display_off = true;
+
+#if IS_ENABLED(CONFIG_WS2812_RGB_IDLE_TIMER)
+            /* Writing one black frame is not enough: the normal ZMK underglow
+             * worker redraws the strip every ~50 ms. Pause that renderer while
+             * idle, but only when it is not already paused by a persistent
+             * widget owner (Caps/persistent layer). */
+            if (!normal_state_saved && !static_lighting_needed()) {
+                idle_underglow_suspended = pause_underglow_if_needed();
+            }
+#endif
+
             for (int i = 0; i < WS2812_NUM_PIXELS; i++) {
                 output_pixels[i] = (struct led_rgb){0, 0, 0};
             }
@@ -738,9 +765,15 @@ static void ws2812_set_idle_display_local(bool off) {
     } else {
         if (idle_display_off) {
             idle_display_off = false;
-            /* pixels[] keeps the logical static/indicator state. Re-apply the
-             * configured widget brightness when waking the strip. */
-            flush_pixels();
+
+            if (idle_underglow_suspended) {
+                idle_underglow_suspended = false;
+                restore_underglow_if_needed(true);
+            } else {
+                /* pixels[] keeps the logical static/indicator state. Re-apply
+                 * that state when the widget owns the strip. */
+                flush_pixels();
+            }
         }
     }
 
