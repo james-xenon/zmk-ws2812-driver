@@ -1,0 +1,9 @@
+/ {
+    behaviors {
+        slpall: slpall {
+            compatible = "zmk,behavior-sleep-all";
+            #binding-cells = <0>;
+            display-name = "Sleep All";
+        };
+    };
+};

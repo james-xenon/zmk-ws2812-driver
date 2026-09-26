@@ -1,0 +1,3 @@
+description: Deep sleep both halves
+compatible: "zmk,behavior-sleep-all"
+include: zero_param.yaml
