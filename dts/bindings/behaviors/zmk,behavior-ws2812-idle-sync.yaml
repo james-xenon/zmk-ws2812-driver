@@ -1,6 +1,6 @@
-description: WS2812 idle sync
+description: WS2812 split activity sync
 
-compatible: "zmk,behavior-ws2812-idle-sync"
+compatible: "zmk,behavior-ws2812-activity-sync"
 
 include: one_param.yaml
 

@@ -24,9 +24,15 @@ static int on_keymap_binding_pressed(
 {
     ARG_UNUSED(event);
 
-    /* param1: 0 = wake, 1 = idle/off. GLOBAL locality applies the same
-     * display state to central and every peripheral. */
-    ws2812_apply_idle_sync(binding->param1 != 0);
+    /* param1 = 0 is an activity heartbeat: wake this half and reset its local
+     * idle timer.  param1 = 1 is kept as a compatibility path for an explicit
+     * local blank request, although the fixed idle design no longer depends on
+     * central-to-peripheral OFF delivery. */
+    if (binding->param1 == 0) {
+        ws2812_note_activity();
+    } else {
+        ws2812_apply_idle_sync(true);
+    }
 
     return ZMK_BEHAVIOR_OPAQUE;
 }

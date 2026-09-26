@@ -60,7 +60,7 @@ static int rgb_timer_released(
 
 static const struct behavior_driver_api rgb_timer_api = {
 
-    .locality = BEHAVIOR_LOCALITY_CENTRAL,
+    .locality = BEHAVIOR_LOCALITY_GLOBAL,
 
     .binding_pressed = rgb_timer_pressed,
 

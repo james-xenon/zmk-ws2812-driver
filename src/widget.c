@@ -789,10 +789,16 @@ void ws2812_apply_idle_sync(bool off) {
 #error "ws2812_async behavior node not found: add #include <behaviors/ws2812_activity_sync.dtsi> to the keymap"
 #endif
 
-static void forward_idle_state_to_all_halves(bool off) {
+/* Keep the peripheral's local idle timer aligned while the user is typing on
+ * the central half.  The peripheral already sees its own key presses locally,
+ * so only central-originated activity needs to be mirrored. */
+#define WS2812_ACTIVITY_SYNC_INTERVAL_MS 10000U
+static int64_t last_activity_sync_ms;
+
+static void forward_activity_to_all_halves(void) {
     struct zmk_behavior_binding binding = {
         .behavior_dev = DEVICE_DT_NAME(DT_NODELABEL(ws2812_async)),
-        .param1 = off ? 1 : 0,
+        .param1 = 0,
         .param2 = 0,
     };
 
@@ -801,13 +807,9 @@ static void forward_idle_state_to_all_halves(bool off) {
         .timestamp = k_uptime_get(),
     };
 
-    /* GLOBAL locality executes this command on central and peripheral.
-     * Queue both edges, matching the already proven layer-sync path. */
     int rc = zmk_behavior_queue_add(&event, binding, true, 0);
-    if (rc == 0) {
-        zmk_behavior_queue_add(&event, binding, false, 10);
-    } else {
-        LOG_WRN("WS2812 idle sync queue full: %d", rc);
+    if (rc != 0) {
+        LOG_WRN("WS2812 activity sync queue full: %d", rc);
     }
 }
 #endif
@@ -829,28 +831,18 @@ static void idle_work_handler(struct k_work *work) {
         return;
     }
 
-#if !IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
-    /* Guard against a key arriving while an already-due work item is starting.
-     * If activity was recorded more recently, reschedule only the remaining time
-     * instead of blanking the LEDs after that new key press. */
+    /* Every half owns its own local timeout.  This avoids a failure mode where
+     * the central half goes dark but the peripheral never receives the OFF
+     * command.  Activity synchronization keeps both local timers aligned. */
     int64_t timeout_ms = (int64_t)idle_timeout_minutes * 60LL * 1000LL;
     int64_t elapsed_ms = k_uptime_get() - last_activity_ms;
     if (last_activity_ms > 0 && elapsed_ms < timeout_ms) {
         k_work_reschedule(&idle_work, K_MSEC(timeout_ms - elapsed_ms));
         return;
     }
-#endif
 
-#if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
-    /* Central owns the timeout. One GLOBAL command turns both halves off at the
-     * same moment, so the two halves can no longer drift apart. */
-    LOG_INF("WS2812 idle timeout fired after %u min", idle_timeout_minutes);
-    forward_idle_state_to_all_halves(true);
-#elif !IS_ENABLED(CONFIG_ZMK_SPLIT)
+    LOG_INF("WS2812 local idle timeout fired after %u min", idle_timeout_minutes);
     ws2812_set_idle_display_local(true);
-#else
-    /* Peripheral has no independent timeout. It follows central. */
-#endif
 }
 
 void ws2812_idle_timer_init(void) {
@@ -860,41 +852,29 @@ void ws2812_idle_timer_init(void) {
 }
 
 void ws2812_idle_timer_reset(void) {
-#if !IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
     if (!idle_timer_enabled) {
         return;
     }
 
     k_work_reschedule(&idle_work, K_MINUTES(idle_timeout_minutes));
-    LOG_DBG("WS2812 idle timer reset: %u min", idle_timeout_minutes);
-#endif
+    LOG_DBG("WS2812 local idle timer reset: %u min", idle_timeout_minutes);
 }
 
 void ws2812_idle_timer_toggle(void) {
-#if !IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
     idle_timer_enabled = !idle_timer_enabled;
 
     if (idle_timer_enabled) {
         ws2812_idle_timer_reset();
     } else {
         k_work_cancel_delayable(&idle_work);
-
-        /* Disabling the timer means lighting should remain available. If the
-         * timeout had already blanked the LEDs, wake both halves now. */
-#if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
-        forward_idle_state_to_all_halves(false);
-#else
         ws2812_set_idle_display_local(false);
-#endif
     }
 
-    LOG_INF("WS2812 idle timer %s (%u min)", idle_timer_enabled ? "ON" : "OFF",
+    LOG_INF("WS2812 local idle timer %s (%u min)", idle_timer_enabled ? "ON" : "OFF",
             idle_timeout_minutes);
-#endif
 }
 
 void ws2812_idle_timeout_change(int8_t direction) {
-#if !IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
     if (direction > 0) {
         if (idle_timeout_minutes < 60U) {
             idle_timeout_minutes++;
@@ -903,13 +883,10 @@ void ws2812_idle_timeout_change(int8_t direction) {
         idle_timeout_minutes--;
     }
 
-    /* Changing the timeout is an explicit request to use the timer.
-     * If it had previously been toggled OFF, +/- turns it back ON and starts
-     * a fresh full interval from this key press. */
+    /* &rgb_timer is GLOBAL, so both halves update the same timeout value. */
     idle_timer_enabled = true;
     ws2812_idle_timer_reset();
-    LOG_INF("WS2812 idle timeout: %u min (timer ON)", idle_timeout_minutes);
-#endif
+    LOG_INF("WS2812 local idle timeout: %u min (timer ON)", idle_timeout_minutes);
 }
 
 bool ws2812_idle_timer_enabled(void) {
@@ -1412,23 +1389,33 @@ void ws2812_indicate_connectivity(void) {
  * Activity/sleep + split wake synchronization
  * ------------------------------------------------------------------------- */
 
-/* Every physical key press wakes the local half immediately. The central build
- * receives BOTH local and peripheral key-position events, so it is the single
- * authority that resets the one-minute timeout for the complete keyboard.
- * A GLOBAL wake is sent only when the central knows the keyboard was blanked;
- * there is no per-key BLE heartbeat and therefore no timer drift. */
+/* Every physical key press wakes and resets the timer on the half that sees it.
+ * Peripheral key events are also reported to the central, so right-side keys
+ * refresh both halves naturally. Central-originated keys are mirrored to the
+ * peripheral with the lightweight activity heartbeat below. */
 static int key_activity_listener_cb(const zmk_event_t *eh) {
     const struct zmk_position_state_changed *ev = as_zmk_position_state_changed(eh);
     if (ev == NULL || !ev->state) {
         return ZMK_EV_EVENT_BUBBLE;
     }
 
+#if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
     bool was_off = idle_display_off;
+#endif
     ws2812_note_activity();
 
 #if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
-    if (was_off) {
-        forward_idle_state_to_all_halves(false);
+    /* Peripheral-originated keys already wake/reset that half locally before
+     * they are reported to the central.  Mirror only central-originated keys.
+     * The first key after idle is always mirrored immediately; while typing,
+     * a 10 s heartbeat is enough to keep the peripheral timer aligned. */
+    if (ev->source == ZMK_POSITION_STATE_CHANGE_SOURCE_LOCAL) {
+        int64_t now = k_uptime_get();
+        if (was_off || last_activity_sync_ms == 0 ||
+            now - last_activity_sync_ms >= WS2812_ACTIVITY_SYNC_INTERVAL_MS) {
+            last_activity_sync_ms = now;
+            forward_activity_to_all_halves();
+        }
     }
 #endif
 
@@ -1439,7 +1426,7 @@ ZMK_LISTENER(ws2812_key_activity_listener, key_activity_listener_cb);
 ZMK_SUBSCRIPTION(ws2812_key_activity_listener, zmk_position_state_changed);
 
 /* ZMK activity-state changes cover non-key activity (e.g. pointing input) and
- * normal sleep/wake transitions. They use the same central-authoritative timer. */
+ * normal sleep/wake transitions. Each half still owns its local idle timer. */
 static int activity_listener_cb(const zmk_event_t *eh) {
     const struct zmk_activity_state_changed *ev = as_zmk_activity_state_changed(eh);
     if (ev == NULL) {
@@ -1447,13 +1434,18 @@ static int activity_listener_cb(const zmk_event_t *eh) {
     }
 
     if (ev->state == ZMK_ACTIVITY_ACTIVE) {
+#if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
         bool was_off = idle_display_off;
+#endif
         activity_active = true;
         ws2812_note_activity();
 
 #if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
-        if (was_off) {
-            forward_idle_state_to_all_halves(false);
+        int64_t now = k_uptime_get();
+        if (was_off || last_activity_sync_ms == 0 ||
+            now - last_activity_sync_ms >= WS2812_ACTIVITY_SYNC_INTERVAL_MS) {
+            last_activity_sync_ms = now;
+            forward_activity_to_all_halves();
         }
 #endif
 
