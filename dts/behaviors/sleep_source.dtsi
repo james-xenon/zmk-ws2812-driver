@@ -1,0 +1,9 @@
+/ {
+    behaviors {
+        slpsrc: slpsrc {
+            compatible = "zmk,behavior-sleep-source";
+            #binding-cells = <0>;
+            display-name = "Sleep Source";
+        };
+    };
+};

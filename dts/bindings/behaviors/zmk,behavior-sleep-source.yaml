@@ -1,0 +1,3 @@
+description: Deep sleep the source side
+compatible: "zmk,behavior-sleep-source"
+include: zero_param.yaml
