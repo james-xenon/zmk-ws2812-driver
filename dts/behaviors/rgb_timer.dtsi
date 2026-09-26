@@ -1,6 +1,6 @@
 / {
     behaviors {
-        rgb_timer: rgb_timer {
+        rgb_timer: rgbtmr {
             compatible = "zmk,behavior-rgb-timer";
             label = "RGB_TIMER";
             #binding-cells = <1>;
