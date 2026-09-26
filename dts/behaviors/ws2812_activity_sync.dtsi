@@ -1,6 +1,6 @@
 / {
     behaviors {
-        ws2812_async: wsactivity {
+        ws2812_async: wsact {
             compatible = "zmk,behavior-ws2812-activity-sync";
             #binding-cells = <1>;
         };
