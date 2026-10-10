@@ -139,22 +139,14 @@ BUILD_ASSERT(WS2812_NUM_PIXELS > 0 && WS2812_NUM_PIXELS <= 255,
 /* -------------------------------------------------------------------------
  * Persistent layer configuration
  * ------------------------------------------------------------------------- */
+#define PERSISTENT_LAYER_LEFT 3
+#define PERSISTENT_LAYER_RIGHT 2
 #define PERSISTENT_LAYER_COLOR 0x00FFFF
 
-/* Every layer that is switched on persistently by a toggle combo shows constant
- * cyan while it is active (no flash). Layers that are entered by holding a key
- * never flash, so they are not listed here unless they are also toggled. */
 static const uint8_t __maybe_unused persistent_sync_layers[] = {
-    2, 3, 5, 7, 8,
+    PERSISTENT_LAYER_LEFT,
+    PERSISTENT_LAYER_RIGHT,
 };
-
-#if WS2812_HALF_IS_LEFT
-/* Left half: G + left thumb toggles (NUMB, NUMB_ENG_NOLIGHT). */
-static const uint8_t half_persistent_layers[] = {3, 8};
-#else
-/* Right half: H + right thumb toggles (SYMB, SYMB_NOLIGHT, SYMB_ENG). */
-static const uint8_t half_persistent_layers[] = {2, 5, 7};
-#endif
 
 /* -------------------------------------------------------------------------
  * Caps Lock indicator
@@ -1004,14 +996,11 @@ static void enqueue_indicator(struct indicator_request request, bool periodic) {
 /* -------------------------------------------------------------------------
  * Layer/manual indications
  * ------------------------------------------------------------------------- */
-/* Flash colours for the layers listed in layer_should_trigger(). */
-#define LAYER_FLASH_ON_COLOR 0xFFFFFF
-#define LAYER_FLASH_OFF_COLOR 0xFF0000
-
 static struct indicator_request make_layer_request(bool enabled) {
     return (struct indicator_request){
         .kind = enabled ? INDICATOR_KIND_LAYER_ON : INDICATOR_KIND_LAYER_OFF,
-        .color = hex_to_rgb(enabled ? LAYER_FLASH_ON_COLOR : LAYER_FLASH_OFF_COLOR),
+        .color = hex_to_rgb(enabled ? CONFIG_WS2812_WIDGET_LAYER_COLOR_ON
+                                    : CONFIG_WS2812_WIDGET_LAYER_COLOR_OFF),
         .fade_in_ms = CONFIG_WS2812_WIDGET_LAYER_FADE_IN_MS,
         .hold_ms = CONFIG_WS2812_WIDGET_LAYER_HOLD_MS,
         .fade_out_ms = CONFIG_WS2812_WIDGET_LAYER_FADE_OUT_MS,
@@ -1066,17 +1055,35 @@ void ws2812_apply_layer_sync(bool enabled) {
 }
 
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE) && WS2812_HAS_LAYER_EVENTS
-/* Only these toggled (non-momentary) layers flash on enter/exit:
- * NAV2 (13), GAMING1 (16), SPEEDTYPE (19). Momentary layers entered by holding
- * second-row keys never flash. */
-#define FLASH_LAYER_NAV2 13
-#define FLASH_LAYER_GAMING1 16
-#define FLASH_LAYER_SPEEDTYPE 19
+static bool layer_is_explicit_trigger(uint8_t layer) {
+    return (CONFIG_WS2812_WIDGET_LAYER_TRIGGER_0 >= 0 &&
+            layer == CONFIG_WS2812_WIDGET_LAYER_TRIGGER_0) ||
+           (CONFIG_WS2812_WIDGET_LAYER_TRIGGER_1 >= 0 &&
+            layer == CONFIG_WS2812_WIDGET_LAYER_TRIGGER_1) ||
+           (CONFIG_WS2812_WIDGET_LAYER_TRIGGER_2 >= 0 &&
+            layer == CONFIG_WS2812_WIDGET_LAYER_TRIGGER_2) ||
+           (CONFIG_WS2812_WIDGET_LAYER_TRIGGER_3 >= 0 &&
+            layer == CONFIG_WS2812_WIDGET_LAYER_TRIGGER_3);
+}
+
+static bool any_explicit_layer_triggers_configured(void) {
+    return CONFIG_WS2812_WIDGET_LAYER_TRIGGER_0 >= 0 ||
+           CONFIG_WS2812_WIDGET_LAYER_TRIGGER_1 >= 0 ||
+           CONFIG_WS2812_WIDGET_LAYER_TRIGGER_2 >= 0 ||
+           CONFIG_WS2812_WIDGET_LAYER_TRIGGER_3 >= 0;
+}
 
 static bool layer_should_trigger(uint8_t layer) {
-    return layer == FLASH_LAYER_NAV2 ||
-           layer == FLASH_LAYER_GAMING1 ||
-           layer == FLASH_LAYER_SPEEDTYPE;
+    if (layer == zmk_keymap_layer_default()) {
+        return false;
+    }
+    if (any_explicit_layer_triggers_configured()) {
+        return layer_is_explicit_trigger(layer);
+    }
+    if (layer >= 32) {
+        return false;
+    }
+    return (CONFIG_WS2812_WIDGET_LAYER_INDICATOR_MASK & BIT(layer)) != 0;
 }
 
 static bool suppress_window_active(void) {
@@ -1500,11 +1507,16 @@ static void indicator_init_thread(void *d0, void *d1, void *d2) {
 
     /* Configure half-local persistent layer ownership before initialized=true,
      * so an early GLOBAL lsync update has a valid target slot. */
-    for (size_t i = 0; i < ARRAY_SIZE(half_persistent_layers); i++) {
-        ws2812_set_persistent_layer_color(half_persistent_layers[i],
-                                          PERSISTENT_LAYER_COLOR,
-                                          0, WS2812_NUM_PIXELS);
-    }
+#if WS2812_HALF_IS_LEFT
+    ws2812_set_persistent_layer_color(PERSISTENT_LAYER_LEFT,
+                                      PERSISTENT_LAYER_COLOR,
+                                      0, WS2812_NUM_PIXELS);
+#endif
+#if WS2812_HALF_IS_RIGHT
+    ws2812_set_persistent_layer_color(PERSISTENT_LAYER_RIGHT,
+                                      PERSISTENT_LAYER_COLOR,
+                                      0, WS2812_NUM_PIXELS);
+#endif
 
 #if WS2812_HALF_IS_LEFT && IS_ENABLED(CONFIG_ZMK_HID_INDICATORS)
     /* Read current host state as well as listening for future changes. This
