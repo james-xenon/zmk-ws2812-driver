@@ -4,9 +4,10 @@
  * Based on the old working widget.
  *
  * Persistent cyan layers:
- *   layer 2 = Russian SYMB  -> right half, cyan
- *   layer 3 = Russian NUMB  -> left half,  cyan
- *   layer 7 = English SYMB  -> right half, cyan
+ *   layer 2 = Russian SYMB       -> right half, cyan
+ *   layer 3 = Russian NUMB       -> left half,  cyan
+ *   layer 7 = English SYMB       -> right half, cyan
+ *   layer 8 = English NUMB       -> left half,  cyan
  *
  * Automatic white/red toggle layers:
  *   layer 1  = KP_MODE
@@ -158,12 +159,15 @@ BUILD_ASSERT(WS2812_NUM_PIXELS > 0 && WS2812_NUM_PIXELS <= 255,
  *   layer 3 -> left half cyan
  *
  * New keymap adds:
- *   layer 7 -> English symbols persistent, also right half cyan
+ *   layer 7 -> English symbols persistent, right half cyan
+ *   layer 8 -> English numbers persistent, left half cyan
  * ------------------------------------------------------------------------- */
 #define KP_MODE_LAYER                 1
 #define SYMB_LAYER                    2
 #define NUMB_LAYER                    3
+
 #define SYMB_ENG_LAYER                7
+#define NUMB_ENG_NOLIGHT_LAYER        8
 
 #define NAV2_LAYER                    13
 #define GAMING1_LAYER                 16
@@ -171,7 +175,10 @@ BUILD_ASSERT(WS2812_NUM_PIXELS > 0 && WS2812_NUM_PIXELS <= 255,
 
 #define PERSISTENT_LAYER_LEFT         NUMB_LAYER
 #define PERSISTENT_LAYER_RIGHT        SYMB_LAYER
+
+#define PERSISTENT_LAYER_LEFT_ENG     NUMB_ENG_NOLIGHT_LAYER
 #define PERSISTENT_LAYER_RIGHT_ENG    SYMB_ENG_LAYER
+
 #define PERSISTENT_LAYER_COLOR        0x00FFFF
 
 /*
@@ -183,7 +190,7 @@ BUILD_ASSERT(WS2812_NUM_PIXELS > 0 && WS2812_NUM_PIXELS <= 255,
  *   16 GAMING1
  *   19 SPEEDTYPE
  *
- * Cyan persistent layers 2, 3, 7 do NOT flash. They only hold static color.
+ * Cyan persistent layers 2, 3, 7, 8 do NOT flash. They only hold static color.
  *
  * LEFTHAND layer 20 is not here because keymap explicitly calls
  * &ws2812_lsync 1/0 for it.
@@ -197,6 +204,7 @@ BUILD_ASSERT(WS2812_NUM_PIXELS > 0 && WS2812_NUM_PIXELS <= 255,
 static const uint8_t __maybe_unused persistent_sync_layers[] = {
     PERSISTENT_LAYER_LEFT,
     PERSISTENT_LAYER_RIGHT,
+    PERSISTENT_LAYER_LEFT_ENG,
     PERSISTENT_LAYER_RIGHT_ENG,
 };
 
@@ -1137,7 +1145,7 @@ static bool layer_should_trigger(uint8_t layer) {
      *   old layer 11 SPEEDTYPE -> new layer 19
      *   new layer 1  KP_MODE   -> Android mode
      *
-     * Cyan persistent layers 2, 3, 7 must not produce white/red flashes.
+     * Cyan persistent layers 2, 3, 7, 8 must not produce white/red flashes.
      */
     return layer_is_automatic_toggle_layer(layer);
 }
@@ -1574,6 +1582,7 @@ static void indicator_init_thread(void *d0, void *d1, void *d2) {
      *
      * Left half:
      *   layer 3 = Russian NUMB, cyan
+     *   layer 8 = English NUMB, cyan
      *
      * Right half:
      *   layer 2 = Russian SYMB, cyan
@@ -1581,6 +1590,10 @@ static void indicator_init_thread(void *d0, void *d1, void *d2) {
      */
 #if WS2812_HALF_IS_LEFT
     ws2812_set_persistent_layer_color(PERSISTENT_LAYER_LEFT,
+                                      PERSISTENT_LAYER_COLOR,
+                                      0, WS2812_NUM_PIXELS);
+
+    ws2812_set_persistent_layer_color(PERSISTENT_LAYER_LEFT_ENG,
                                       PERSISTENT_LAYER_COLOR,
                                       0, WS2812_NUM_PIXELS);
 #endif
