@@ -1,20 +1,29 @@
 /*
  * WS2812 indicator widget for ZMK v0.3.x.
  *
- * This revision is based on the old working widget and adapted to the new keymap.
+ * Based on the old working widget.
  *
- * Old persistent logic preserved:
+ * Persistent cyan layers:
  *   layer 2 = Russian SYMB  -> right half, cyan
  *   layer 3 = Russian NUMB  -> left half,  cyan
+ *   layer 7 = English SYMB  -> right half, cyan
  *
- * New keymap additions:
- *   layer 1 = KP_MODE / Android mode -> both halves, orange, lowest priority
- *   layer 7 = English SYMB persistent -> right half, cyan, analogous to old layer 2
+ * Automatic white/red toggle layers:
+ *   layer 1  = KP_MODE
+ *   layer 13 = NAV2
+ *   layer 16 = GAMING1
+ *   layer 19 = SPEEDTYPE
  *
- * Caps Lock remains:
- *   left half LEDs 0..1
- *   color 0x8000FF
- *   real host HID state
+ * Layer 20 LEFTHAND is intentionally NOT in automatic trigger mask,
+ * because the keymap already flashes it explicitly using:
+ *   &ws2812_lsync 1
+ *   &ws2812_lsync 0
+ *
+ * Manual reset flashes:
+ *   &ws2812_wdg 0
+ * is used by reset_l0_green_flash and reset_kp_mode_green_flash.
+ * It produces the manual green flash and suppresses automatic layer
+ * ON/OFF flashes inside the suppression window.
  */
 
 #include <string.h>
@@ -142,65 +151,61 @@ BUILD_ASSERT(WS2812_NUM_PIXELS > 0 && WS2812_NUM_PIXELS <= 255,
              "chain-length must be the number of LEDs on THIS half (1..255)");
 
 /* -------------------------------------------------------------------------
- * Keymap layer numbers used by this widget
+ * Persistent layer configuration
  *
- * New keymap:
- *   0  BASE
- *   1  KP_MODE / Android mode
- *   2  Russian SYMB persistent
- *   3  Russian NUMB persistent
- *   7  English SYMB persistent
+ * Old working logic preserved:
+ *   layer 2 -> right half cyan
+ *   layer 3 -> left half cyan
  *
- * Old behavior preserved:
- *   2 -> right half cyan
- *   3 -> left half cyan
- *
- * Added:
- *   1 -> both halves orange, lowest priority
- *   7 -> right half cyan, analogous to old layer 2
+ * New keymap adds:
+ *   layer 7 -> English symbols persistent, also right half cyan
  * ------------------------------------------------------------------------- */
 #define KP_MODE_LAYER                 1
 #define SYMB_LAYER                    2
 #define NUMB_LAYER                    3
 #define SYMB_ENG_LAYER                7
 
-/* Old persistent mapping. */
+#define NAV2_LAYER                    13
+#define GAMING1_LAYER                 16
+#define SPEEDTYPE_LAYER               19
+
 #define PERSISTENT_LAYER_LEFT         NUMB_LAYER
 #define PERSISTENT_LAYER_RIGHT        SYMB_LAYER
+#define PERSISTENT_LAYER_RIGHT_ENG    SYMB_ENG_LAYER
 #define PERSISTENT_LAYER_COLOR        0x00FFFF
 
-/* New Android/KP_MODE indicator. */
-#define KP_MODE_LAYER_COLOR           0xFFA500
-
-/* English persistent symbols. By default right half only, like old layer 2. */
-#define SYMB_ENG_LAYER_COLOR          0x00FFFF
-
 /*
- * Local temporary layer-change triggers.
+ * Automatic white/red layer-change flashes.
  *
- * This keeps ON/OFF flashes working for the new layer numbers even if the
- * Kconfig mask still contains only old layer numbers.
+ * Only these layers produce normal ON/OFF flashes:
+ *   1  KP_MODE
+ *   13 NAV2
+ *   16 GAMING1
+ *   19 SPEEDTYPE
+ *
+ * Cyan persistent layers 2, 3, 7 do NOT flash. They only hold static color.
+ *
+ * LEFTHAND layer 20 is not here because keymap explicitly calls
+ * &ws2812_lsync 1/0 for it.
  */
-#define WS2812_LOCAL_LAYER_TRIGGER_MASK                                             \
-    (BIT(KP_MODE_LAYER) |                                                           \
-     BIT(SYMB_LAYER) |                                                              \
-     BIT(NUMB_LAYER) |                                                              \
-     BIT(SYMB_ENG_LAYER))
+#define WS2812_AUTOMATIC_TOGGLE_LAYER_MASK                                            \
+    (BIT(KP_MODE_LAYER) |                                                             \
+     BIT(NAV2_LAYER) |                                                                \
+     BIT(GAMING1_LAYER) |                                                             \
+     BIT(SPEEDTYPE_LAYER))
 
 static const uint8_t __maybe_unused persistent_sync_layers[] = {
-    KP_MODE_LAYER,
     PERSISTENT_LAYER_LEFT,
     PERSISTENT_LAYER_RIGHT,
-    SYMB_ENG_LAYER,
+    PERSISTENT_LAYER_RIGHT_ENG,
 };
 
 /* -------------------------------------------------------------------------
  * Caps Lock indicator
  *
- * On this PCB each half has its own 0..20 LED index space.
- * Current Caps range on the LEFT half is LED 0..1 (START=0, COUNT=2).
- * Caps color is electric purple. Its actual output brightness is controlled
- * by the independent widget brightness setting described above.
+ * Old working widget configuration preserved:
+ *   LEFT half LEDs 0..1
+ *   electric purple 0x8000FF
  * ------------------------------------------------------------------------- */
 #if WS2812_HALF_IS_LEFT
 #define CAPS_INDICATOR_START 0
@@ -212,9 +217,14 @@ static bool caps_lock_active;
 
 /* Automatic layer-OFF indication is deliberately delayed slightly longer than
  * the keymap macro's 20 ms step. This gives reset_l0_green_flash time to call
- * &ws2812_wdg 0 and cancel/suppress the red OFF flash deterministically. */
+ * &ws2812_wdg 0 and cancel/suppress the red OFF flash deterministically.
+ *
+ * Automatic layer-ON indication is also delayed enough for reset_kp_mode_green_flash
+ * to suppress the white ON flash when switching to layer 1 by the four-key combo.
+ */
 #define RESET_MANUAL_SUPPRESS_MS 250U
 #define AUTO_LAYER_OFF_MIN_DELAY_MS 80U
+#define AUTO_LAYER_ON_MIN_DELAY_MS 80U
 
 /* -------------------------------------------------------------------------
  * Types/state
@@ -550,15 +560,7 @@ static bool static_lighting_needed(void) {
 static void redraw_static_lighting_locked(void) {
     buffer_fill((struct led_rgb){0, 0, 0});
 
-    /* Base static layer color first.
-     *
-     * Configuration order matters:
-     *   - KP_MODE is configured first and is therefore lowest priority.
-     *   - Old Russian NUMB/SYMB layers are configured after it.
-     *   - English SYMB is configured after Russian SYMB on the right half.
-     *
-     * Caps Lock is drawn last and has highest static priority.
-     */
+    /* Base static layer color first. */
     for (int i = 0; i < MAX_PERSISTENT_LAYERS; i++) {
         if (persistent_layers[i].configured && persistent_layers[i].active) {
             buffer_range(persistent_layers[i].color,
@@ -1087,9 +1089,13 @@ void ws2812_indicate_layer(void) {
     last_layer_indication_ms = k_uptime_get();
 
 #if WS2812_HAS_LAYER_EVENTS
-    /* This is the manual green confirmation used by reset_l0_green_flash.
-     * Cancel a pending automatic layer OFF indication and suppress any near-
-     * simultaneous delayed one. */
+    /* This is the manual green confirmation used by reset_l0_green_flash and
+     * reset_kp_mode_green_flash.
+     *
+     * Cancel a pending automatic layer ON/OFF indication and suppress any
+     * near-simultaneous delayed one. This makes the four-key reset to layer 0
+     * or layer 1 show only the green manual flash.
+     */
     manual_layer_suppress_until_ms = k_uptime_get_32() + RESET_MANUAL_SUPPRESS_MS;
     pending_layer_valid = false;
     k_work_cancel_delayable(&layer_indicator_work);
@@ -1109,27 +1115,12 @@ void ws2812_apply_layer_sync(bool enabled) {
 }
 
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE) && WS2812_HAS_LAYER_EVENTS
-static bool layer_is_local_trigger(uint8_t layer) {
-    return layer < 32 &&
-           ((WS2812_LOCAL_LAYER_TRIGGER_MASK & BIT(layer)) != 0);
-}
+static bool layer_is_automatic_toggle_layer(uint8_t layer) {
+    if (layer >= 32) {
+        return false;
+    }
 
-static bool layer_is_explicit_trigger(uint8_t layer) {
-    return (CONFIG_WS2812_WIDGET_LAYER_TRIGGER_0 >= 0 &&
-            layer == CONFIG_WS2812_WIDGET_LAYER_TRIGGER_0) ||
-           (CONFIG_WS2812_WIDGET_LAYER_TRIGGER_1 >= 0 &&
-            layer == CONFIG_WS2812_WIDGET_LAYER_TRIGGER_1) ||
-           (CONFIG_WS2812_WIDGET_LAYER_TRIGGER_2 >= 0 &&
-            layer == CONFIG_WS2812_WIDGET_LAYER_TRIGGER_2) ||
-           (CONFIG_WS2812_WIDGET_LAYER_TRIGGER_3 >= 0 &&
-            layer == CONFIG_WS2812_WIDGET_LAYER_TRIGGER_3);
-}
-
-static bool any_explicit_layer_triggers_configured(void) {
-    return CONFIG_WS2812_WIDGET_LAYER_TRIGGER_0 >= 0 ||
-           CONFIG_WS2812_WIDGET_LAYER_TRIGGER_1 >= 0 ||
-           CONFIG_WS2812_WIDGET_LAYER_TRIGGER_2 >= 0 ||
-           CONFIG_WS2812_WIDGET_LAYER_TRIGGER_3 >= 0;
+    return (WS2812_AUTOMATIC_TOGGLE_LAYER_MASK & BIT(layer)) != 0;
 }
 
 static bool layer_should_trigger(uint8_t layer) {
@@ -1137,20 +1128,18 @@ static bool layer_should_trigger(uint8_t layer) {
         return false;
     }
 
-    /* Always trigger for the layers used by the new keymap. */
-    if (layer_is_local_trigger(layer)) {
-        return true;
-    }
-
-    if (any_explicit_layer_triggers_configured()) {
-        return layer_is_explicit_trigger(layer);
-    }
-
-    if (layer >= 32) {
-        return false;
-    }
-
-    return (CONFIG_WS2812_WIDGET_LAYER_INDICATOR_MASK & BIT(layer)) != 0;
+    /*
+     * Use the explicit local whitelist instead of Kconfig trigger masks.
+     *
+     * This is required because the new keymap shifted layer numbers:
+     *   old layer 6  NAV2      -> new layer 13
+     *   old layer 7  GAMING1   -> new layer 16
+     *   old layer 11 SPEEDTYPE -> new layer 19
+     *   new layer 1  KP_MODE   -> Android mode
+     *
+     * Cyan persistent layers 2, 3, 7 must not produce white/red flashes.
+     */
+    return layer_is_automatic_toggle_layer(layer);
 }
 
 static bool suppress_window_active(void) {
@@ -1168,8 +1157,14 @@ static void layer_indicator_work_cb(struct k_work *work) {
     bool state = pending_layer_state;
     pending_layer_valid = false;
 
-    /* Manual green reset confirmation wins over the automatic red OFF flash. */
-    if (!state && suppress_window_active()) {
+    /*
+     * Manual green reset confirmation wins over automatic layer ON/OFF flashes.
+     *
+     * Old widget suppressed only OFF. New keymap can reset directly to layer 1,
+     * which is an automatic toggle layer, so ON must also be suppressed inside
+     * the manual reset window.
+     */
+    if (suppress_window_active()) {
         return;
     }
 
@@ -1199,6 +1194,8 @@ static int layer_listener_cb(const zmk_event_t *eh) {
     uint32_t delay_ms = CONFIG_WS2812_WIDGET_LAYER_DEBOUNCE_MS;
     if (!ev->state) {
         delay_ms = MAX(delay_ms, AUTO_LAYER_OFF_MIN_DELAY_MS);
+    } else {
+        delay_ms = MAX(delay_ms, AUTO_LAYER_ON_MIN_DELAY_MS);
     }
 
     k_work_reschedule(&layer_indicator_work, K_MSEC(delay_ms));
@@ -1575,50 +1572,26 @@ static void indicator_init_thread(void *d0, void *d1, void *d2) {
     /* Configure half-local persistent layer ownership before initialized=true,
      * so an early GLOBAL lsync update has a valid target slot.
      *
-     * Priority is controlled by configuration order:
-     *   first configured = lower priority
-     *   last configured  = higher priority
-     *
      * Left half:
-     *   1. KP_MODE orange
-     *   2. Russian NUMB cyan
+     *   layer 3 = Russian NUMB, cyan
      *
      * Right half:
-     *   1. KP_MODE orange
-     *   2. Russian SYMB cyan
-     *   3. English SYMB cyan
-     *
-     * If you want English SYMB layer 7 to light BOTH halves cyan, uncomment
-     * the SYMB_ENG_LAYER line in the left-half block below.
+     *   layer 2 = Russian SYMB, cyan
+     *   layer 7 = English SYMB, cyan
      */
 #if WS2812_HALF_IS_LEFT
-    ws2812_set_persistent_layer_color(KP_MODE_LAYER,
-                                      KP_MODE_LAYER_COLOR,
-                                      0, WS2812_NUM_PIXELS);
-
     ws2812_set_persistent_layer_color(PERSISTENT_LAYER_LEFT,
                                       PERSISTENT_LAYER_COLOR,
                                       0, WS2812_NUM_PIXELS);
-
-    /* Optional: full cyan for English symbols on both halves.
-     * Uncomment if layer 7 should light the left half too.
-     */
-    // ws2812_set_persistent_layer_color(SYMB_ENG_LAYER,
-    //                                   SYMB_ENG_LAYER_COLOR,
-    //                                   0, WS2812_NUM_PIXELS);
 #endif
 
 #if WS2812_HALF_IS_RIGHT
-    ws2812_set_persistent_layer_color(KP_MODE_LAYER,
-                                      KP_MODE_LAYER_COLOR,
-                                      0, WS2812_NUM_PIXELS);
-
     ws2812_set_persistent_layer_color(PERSISTENT_LAYER_RIGHT,
                                       PERSISTENT_LAYER_COLOR,
                                       0, WS2812_NUM_PIXELS);
 
-    ws2812_set_persistent_layer_color(SYMB_ENG_LAYER,
-                                      SYMB_ENG_LAYER_COLOR,
+    ws2812_set_persistent_layer_color(PERSISTENT_LAYER_RIGHT_ENG,
+                                      PERSISTENT_LAYER_COLOR,
                                       0, WS2812_NUM_PIXELS);
 #endif
 
