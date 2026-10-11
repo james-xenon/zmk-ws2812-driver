@@ -9,7 +9,12 @@
  *     and then restore it deterministically;
  *   - reset_l0_green_flash (&to 0, then &ws2812_wdg 0) does not destroy Caps,
  *     persistent colors, underglow state, or ext-power state;
- *   - the green reset flash suppresses the automatic red layer-OFF flash.
+ *   - the green reset flash suppresses the automatic red layer-OFF flash;
+ *   - supports new keymap layers:
+ *       1  KP_MODE_LAYER       Android/base mode
+ *       2  SYMB_LAYER          Russian symbols persistent
+ *       3  NUMB_LAYER          Russian numbers persistent
+ *       7  SYMB_ENG_LAYER      English symbols persistent, cyan
  */
 
 #include <string.h>
@@ -137,15 +142,51 @@ BUILD_ASSERT(WS2812_NUM_PIXELS > 0 && WS2812_NUM_PIXELS <= 255,
              "chain-length must be the number of LEDs on THIS half (1..255)");
 
 /* -------------------------------------------------------------------------
- * Persistent layer configuration
+ * Keymap layer numbering and persistent colors
+ *
+ * Expected keymap layers:
+ *
+ *   0  BASE_LAYER
+ *   1  KP_MODE_LAYER          Android/base mode
+ *   2  SYMB_LAYER             Russian symbols persistent
+ *   3  NUMB_LAYER             Russian numbers persistent
+ *   7  SYMB_ENG_LAYER         English symbols persistent, cyan
+ *
+ * Layers 4, 5, 6, 8, 9, 22 are temporary/no-light hold layers and must not
+ * receive persistent static color.
  * ------------------------------------------------------------------------- */
-#define PERSISTENT_LAYER_LEFT 3
-#define PERSISTENT_LAYER_RIGHT 2
-#define PERSISTENT_LAYER_COLOR 0x00FFFF
+#define KP_MODE_LAYER                 1
+#define SYMB_LAYER                    2
+#define NUMB_LAYER                    3
+#define SYMB_ENG_LAYER                7
+
+/* Russian persistent layers keep the old cyan color. */
+#define PERSISTENT_LAYER_COLOR        0x00FFFF
+
+/* Android/KP_MODE gets a distinct warm color. */
+#define KP_MODE_LAYER_COLOR           0xFFA500
+
+/* English persistent symbol layer is cyan. */
+#define SYMB_ENG_LAYER_COLOR          0x00FFFF
+
+/*
+ * Local temporary layer-change trigger mask.
+ *
+ * These layers should produce normal ON/OFF flashes in addition to their
+ * persistent static color. This makes the widget independent from Kconfig
+ * layer-trigger masks for the new Android layers.
+ */
+#define WS2812_LOCAL_LAYER_TRIGGER_MASK                                             \
+    (BIT(KP_MODE_LAYER) |                                                           \
+     BIT(SYMB_LAYER) |                                                              \
+     BIT(NUMB_LAYER) |                                                              \
+     BIT(SYMB_ENG_LAYER))
 
 static const uint8_t __maybe_unused persistent_sync_layers[] = {
-    PERSISTENT_LAYER_LEFT,
-    PERSISTENT_LAYER_RIGHT,
+    KP_MODE_LAYER,
+    SYMB_LAYER,
+    NUMB_LAYER,
+    SYMB_ENG_LAYER,
 };
 
 /* -------------------------------------------------------------------------
@@ -501,12 +542,45 @@ static bool static_lighting_needed(void) {
     return false;
 }
 
+/*
+ * Static layer priority.
+ *
+ * Lower number is drawn first and can be overwritten by higher priority layers.
+ * Caps Lock is always drawn after all persistent layers.
+ *
+ * Priority:
+ *   0 — KP_MODE_LAYER
+ *   1 — Russian SYMB/NUMB persistent layers
+ *   2 — English SYMB_ENG_LAYER
+ */
+static uint8_t persistent_layer_priority(uint8_t layer) {
+    switch (layer) {
+    case KP_MODE_LAYER:
+        return 0;
+    case SYMB_LAYER:
+    case NUMB_LAYER:
+        return 1;
+    case SYMB_ENG_LAYER:
+        return 2;
+    default:
+        return 3;
+    }
+}
+
 static void redraw_static_lighting_locked(void) {
     buffer_fill((struct led_rgb){0, 0, 0});
 
-    /* Base static layer color first. */
-    for (int i = 0; i < MAX_PERSISTENT_LAYERS; i++) {
-        if (persistent_layers[i].configured && persistent_layers[i].active) {
+    /* Draw persistent layers by priority, not by storage slot order. */
+    for (uint8_t priority = 0; priority <= 3; priority++) {
+        for (int i = 0; i < MAX_PERSISTENT_LAYERS; i++) {
+            if (!persistent_layers[i].configured || !persistent_layers[i].active) {
+                continue;
+            }
+
+            if (persistent_layer_priority(persistent_layers[i].layer) != priority) {
+                continue;
+            }
+
             buffer_range(persistent_layers[i].color,
                          persistent_layers[i].start_pixel,
                          persistent_layers[i].num_pixels);
@@ -1055,6 +1129,11 @@ void ws2812_apply_layer_sync(bool enabled) {
 }
 
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE) && WS2812_HAS_LAYER_EVENTS
+static bool layer_is_local_trigger(uint8_t layer) {
+    return layer < 32 &&
+           ((WS2812_LOCAL_LAYER_TRIGGER_MASK & BIT(layer)) != 0);
+}
+
 static bool layer_is_explicit_trigger(uint8_t layer) {
     return (CONFIG_WS2812_WIDGET_LAYER_TRIGGER_0 >= 0 &&
             layer == CONFIG_WS2812_WIDGET_LAYER_TRIGGER_0) ||
@@ -1077,12 +1156,20 @@ static bool layer_should_trigger(uint8_t layer) {
     if (layer == zmk_keymap_layer_default()) {
         return false;
     }
+
+    /* Always trigger for the new persistent Android/Russian/English layers. */
+    if (layer_is_local_trigger(layer)) {
+        return true;
+    }
+
     if (any_explicit_layer_triggers_configured()) {
         return layer_is_explicit_trigger(layer);
     }
+
     if (layer >= 32) {
         return false;
     }
+
     return (CONFIG_WS2812_WIDGET_LAYER_INDICATOR_MASK & BIT(layer)) != 0;
 }
 
@@ -1506,15 +1593,39 @@ static void indicator_init_thread(void *d0, void *d1, void *d2) {
     }
 
     /* Configure half-local persistent layer ownership before initialized=true,
-     * so an early GLOBAL lsync update has a valid target slot. */
+     * so an early GLOBAL lsync update has a valid target slot.
+     *
+     * Left half:
+     *   - KP_MODE_LAYER: Android/base mode
+     *   - NUMB_LAYER: Russian numbers persistent
+     *   - SYMB_ENG_LAYER: English symbols persistent
+     *
+     * Right half:
+     *   - KP_MODE_LAYER: Android/base mode
+     *   - SYMB_LAYER: Russian symbols persistent
+     *   - SYMB_ENG_LAYER: English symbols persistent
+     */
 #if WS2812_HALF_IS_LEFT
-    ws2812_set_persistent_layer_color(PERSISTENT_LAYER_LEFT,
+    ws2812_set_persistent_layer_color(KP_MODE_LAYER,
+                                      KP_MODE_LAYER_COLOR,
+                                      0, WS2812_NUM_PIXELS);
+    ws2812_set_persistent_layer_color(NUMB_LAYER,
                                       PERSISTENT_LAYER_COLOR,
                                       0, WS2812_NUM_PIXELS);
+    ws2812_set_persistent_layer_color(SYMB_ENG_LAYER,
+                                      SYMB_ENG_LAYER_COLOR,
+                                      0, WS2812_NUM_PIXELS);
 #endif
+
 #if WS2812_HALF_IS_RIGHT
-    ws2812_set_persistent_layer_color(PERSISTENT_LAYER_RIGHT,
+    ws2812_set_persistent_layer_color(KP_MODE_LAYER,
+                                      KP_MODE_LAYER_COLOR,
+                                      0, WS2812_NUM_PIXELS);
+    ws2812_set_persistent_layer_color(SYMB_LAYER,
                                       PERSISTENT_LAYER_COLOR,
+                                      0, WS2812_NUM_PIXELS);
+    ws2812_set_persistent_layer_color(SYMB_ENG_LAYER,
+                                      SYMB_ENG_LAYER_COLOR,
                                       0, WS2812_NUM_PIXELS);
 #endif
 
@@ -1525,7 +1636,7 @@ static void indicator_init_thread(void *d0, void *d1, void *d2) {
         (zmk_hid_indicators_get_current_profile() & HID_LED_CAPS_LOCK_BIT) != 0;
 #endif
 
-initialized = true;
+    initialized = true;
 
     ws2812_idle_timer_init();
 
