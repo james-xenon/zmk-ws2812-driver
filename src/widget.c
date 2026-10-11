@@ -25,6 +25,13 @@
  * is used by reset_l0_green_flash and reset_kp_mode_green_flash.
  * It produces the manual green flash and suppresses automatic layer
  * ON/OFF flashes inside the suppression window.
+ *
+ * Responsiveness fixes:
+ *   - layer/Caps state changes no longer wait for the LED animation mutex;
+ *   - running transient flashes can be aborted when static state changes;
+ *   - central forwards persistent sync only for layers owned by the other half;
+ *   - idle display wake/sleep is deferred to a work item and does not block
+ *     key processing during animations.
  */
 
 #include <string.h>
@@ -201,12 +208,33 @@ BUILD_ASSERT(WS2812_NUM_PIXELS > 0 && WS2812_NUM_PIXELS <= 255,
      BIT(GAMING1_LAYER) |                                                             \
      BIT(SPEEDTYPE_LAYER))
 
+/*
+ * Split sync optimization:
+ *
+ * The central half only needs to forward persistent layers that are physically
+ * rendered on the opposite half. This reduces BLE traffic and avoids unnecessary
+ * synchronization messages for local-half persistent layers.
+ */
+#if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+#if WS2812_HALF_IS_LEFT
+static const uint8_t __maybe_unused persistent_sync_layers[] = {
+    PERSISTENT_LAYER_RIGHT,
+    PERSISTENT_LAYER_RIGHT_ENG,
+};
+#else
+static const uint8_t __maybe_unused persistent_sync_layers[] = {
+    PERSISTENT_LAYER_LEFT,
+    PERSISTENT_LAYER_LEFT_ENG,
+};
+#endif
+#else
 static const uint8_t __maybe_unused persistent_sync_layers[] = {
     PERSISTENT_LAYER_LEFT,
     PERSISTENT_LAYER_RIGHT,
     PERSISTENT_LAYER_LEFT_ENG,
     PERSISTENT_LAYER_RIGHT_ENG,
 };
+#endif
 
 /* -------------------------------------------------------------------------
  * Caps Lock indicator
@@ -220,7 +248,7 @@ static const uint8_t __maybe_unused persistent_sync_layers[] = {
 #define CAPS_INDICATOR_COUNT 2
 #define CAPS_INDICATOR_COLOR 0x8000FF
 #define HID_LED_CAPS_LOCK_BIT BIT(1)
-static bool caps_lock_active;
+static volatile bool caps_lock_active;
 #endif
 
 /* Automatic layer-OFF indication is deliberately delayed slightly longer than
@@ -233,6 +261,20 @@ static bool caps_lock_active;
 #define RESET_MANUAL_SUPPRESS_MS 250U
 #define AUTO_LAYER_OFF_MIN_DELAY_MS 80U
 #define AUTO_LAYER_ON_MIN_DELAY_MS 80U
+
+/*
+ * Static persistent updates are coalesced through a delayed work item.
+ * 5 ms is small enough to feel immediate, but large enough to merge rapid
+ * layer/Caps state changes into one LED redraw.
+ */
+#define WS2812_PERSISTENT_SYNC_COALESCE_MS 5U
+
+/*
+ * Transient animations sleep in small slices and check the abort flag.
+ * This allows a persistent layer/Caps change to interrupt an ongoing blink
+ * without blocking the ZMK layer event callback.
+ */
+#define WS2812_ANIMATION_ABORT_SLICE_MS 10U
 
 /* -------------------------------------------------------------------------
  * Types/state
@@ -264,7 +306,7 @@ struct persistent_layer_config {
     uint8_t start_pixel;
     uint8_t num_pixels;
     bool configured;
-    bool active;
+    volatile bool active;
 };
 
 static const struct device *const led_strip = DEVICE_DT_GET(WS2812_STRIP_NODE);
@@ -272,7 +314,7 @@ static struct led_rgb pixels[WS2812_NUM_PIXELS];
 static struct led_rgb output_pixels[WS2812_NUM_PIXELS];
 static struct persistent_layer_config persistent_layers[MAX_PERSISTENT_LAYERS];
 
-static uint8_t widget_brightness_percent = WS2812_WIDGET_BRIGHTNESS_DEFAULT;
+static volatile uint8_t widget_brightness_percent = WS2812_WIDGET_BRIGHTNESS_DEFAULT;
 
 static bool initialized;
 static bool widget_enabled = IS_ENABLED(CONFIG_WS2812_WIDGET_ENABLED_ON_START);
@@ -292,14 +334,27 @@ static bool normal_ext_power_was_on = true;
 
 K_MUTEX_DEFINE(ws2812_lighting_mutex);
 
+/* Deferred static lighting update. Layer/Caps callbacks only mark state dirty
+ * and submit this work; they do not wait for the animation mutex. */
+static void persistent_sync_work_cb(struct k_work *work);
+K_WORK_DELAYABLE_DEFINE(persistent_sync_work, persistent_sync_work_cb);
+
+/* Deferred idle display apply. Key activity callbacks do not block on LED
+ * underglow pause/restore sleeps. */
+static void idle_display_work_cb(struct k_work *work);
+K_WORK_DEFINE(idle_display_work, idle_display_work_cb);
+
 static void idle_work_handler(struct k_work *work);
 K_WORK_DELAYABLE_DEFINE(idle_work, idle_work_handler);
 
 static bool idle_timer_enabled = IS_ENABLED(CONFIG_WS2812_IDLE_TIMER);
 static bool idle_display_off = false;
+static volatile bool idle_display_target_off = false;
 static bool idle_underglow_suspended = false;
 static uint32_t idle_timeout_minutes = CONFIG_WS2812_IDLE_TIMEOUT_MINUTES;
 
+static volatile bool indicator_abort_requested;
+static volatile bool persistent_state_dirty;
 
 K_MSGQ_DEFINE(indicator_msgq, sizeof(struct indicator_request), 12, 4);
 
@@ -308,6 +363,23 @@ K_MSGQ_DEFINE(indicator_msgq, sizeof(struct indicator_request), 12, 4);
     IS_ENABLED(CONFIG_ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING)
 static uint8_t peripheral_battery_level;
 #endif
+
+/* Forward declarations used by deferred works. */
+static bool static_lighting_needed(void);
+static void redraw_static_lighting_locked(void);
+static void sync_static_lighting_locked(void);
+static void apply_idle_display_locked(bool off);
+
+static void schedule_persistent_sync(bool abort_animation) {
+    persistent_state_dirty = true;
+
+    if (abort_animation) {
+        indicator_abort_requested = true;
+    }
+
+    k_work_reschedule(&persistent_sync_work,
+                      K_MSEC(WS2812_PERSISTENT_SYNC_COALESCE_MS));
+}
 
 /* -------------------------------------------------------------------------
  * Pixel helpers
@@ -339,13 +411,15 @@ static void buffer_range(struct led_rgb color, uint8_t start, uint8_t count) {
 static int flush_pixels(void) {
     /* Keep pixels[] at full logical color and apply brightness only at output.
      * This makes brightness changes lossless and immediately reversible. */
+    uint8_t brightness = widget_brightness_percent;
+
     for (int i = 0; i < WS2812_NUM_PIXELS; i++) {
         output_pixels[i].r =
-            (uint8_t)(((uint16_t)pixels[i].r * widget_brightness_percent) / 100U);
+            (uint8_t)(((uint16_t)pixels[i].r * brightness) / 100U);
         output_pixels[i].g =
-            (uint8_t)(((uint16_t)pixels[i].g * widget_brightness_percent) / 100U);
+            (uint8_t)(((uint16_t)pixels[i].g * brightness) / 100U);
         output_pixels[i].b =
-            (uint8_t)(((uint16_t)pixels[i].b * widget_brightness_percent) / 100U);
+            (uint8_t)(((uint16_t)pixels[i].b * brightness) / 100U);
     }
 
     return led_strip_update_rgb(led_strip, output_pixels, WS2812_NUM_PIXELS);
@@ -355,10 +429,6 @@ static int set_all_pixels(struct led_rgb color) {
     buffer_fill(color);
     return flush_pixels();
 }
-
-/* Forward declarations used by brightness control. */
-static bool static_lighting_needed(void);
-static void redraw_static_lighting_locked(void);
 
 /* -------------------------------------------------------------------------
  * Widget brightness control + persistence
@@ -389,23 +459,16 @@ static void schedule_widget_brightness_save(void) {
 #endif
 }
 
-static void redraw_for_brightness_change_locked(void) {
-    if (!initialized || !device_is_ready(led_strip)) {
-        return;
-    }
-
-    if (static_lighting_needed()) {
-        redraw_static_lighting_locked();
-    }
-}
-
 void ws2812_set_widget_brightness(uint8_t percent) {
     uint8_t new_value = clamp_widget_brightness(percent);
 
-    k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
+    /* Byte-sized volatile write is atomic on this target. Do not take the LED
+     * mutex here: brightness changes must not block behind an animation. */
     widget_brightness_percent = new_value;
-    redraw_for_brightness_change_locked();
-    k_mutex_unlock(&ws2812_lighting_mutex);
+
+    if (initialized && device_is_ready(led_strip)) {
+        schedule_persistent_sync(false);
+    }
 
     schedule_widget_brightness_save();
 
@@ -625,6 +688,27 @@ static void sync_static_lighting_locked(void) {
     }
 }
 
+static void persistent_sync_work_cb(struct k_work *work) {
+    ARG_UNUSED(work);
+
+    if (!initialized || !device_is_ready(led_strip)) {
+        return;
+    }
+
+    k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
+
+    if (persistent_state_dirty) {
+        sync_static_lighting_locked();
+        persistent_state_dirty = false;
+        indicator_abort_requested = false;
+    } else if (indicator_abort_requested) {
+        /* Defensive: clear a stale abort flag if no static redraw is pending. */
+        indicator_abort_requested = false;
+    }
+
+    k_mutex_unlock(&ws2812_lighting_mutex);
+}
+
 void ws2812_set_persistent_layer_color(uint8_t layer, uint32_t color_hex,
                                        uint8_t start_pixel, uint8_t num_pixels) {
     int slot = -1;
@@ -683,15 +767,13 @@ void ws2812_set_persistent_layer_active(uint8_t layer, bool active) {
         return;
     }
 
-    /* Change the owner state while holding the same mutex as animations.
-     * Otherwise an activation during a transient flash could capture the
-     * temporarily-paused underglow as the user's original state. */
-    k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
+    /* Do not take the LED mutex here. Layer events must remain responsive even
+     * while a transient blink is running. Mark state dirty, request abort of the
+     * current animation, and let the deferred work perform the actual redraw. */
     if (persistent_layers[slot].active != active) {
         persistent_layers[slot].active = active;
-        sync_static_lighting_locked();
+        schedule_persistent_sync(true);
     }
-    k_mutex_unlock(&ws2812_lighting_mutex);
 }
 
 /* -------------------------------------------------------------------------
@@ -711,15 +793,12 @@ static int hid_caps_listener_cb(const zmk_event_t *eh) {
         return 0;
     }
 
-    /* Update the owner state under the animation mutex. If a host report
-     * arrives during a blink, the blink restores the true pre-blink lighting
-     * first; only then does Caps take ownership and snapshot that state. */
-    k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
+    /* Same rule as persistent layers: do not block HID callbacks on the LED
+     * animation mutex. */
     if (new_caps_state != caps_lock_active) {
         caps_lock_active = new_caps_state;
-        sync_static_lighting_locked();
+        schedule_persistent_sync(true);
     }
-    k_mutex_unlock(&ws2812_lighting_mutex);
 
     LOG_DBG("Host Caps Lock state: %s", new_caps_state ? "ON" : "OFF");
     return 0;
@@ -732,6 +811,23 @@ ZMK_SUBSCRIPTION(ws2812_hid_caps_listener, zmk_hid_indicators_changed);
 /* -------------------------------------------------------------------------
  * Fade/transient helpers
  * ------------------------------------------------------------------------- */
+static void interruptible_sleep_ms(uint16_t ms) {
+    while (ms > 0 && !indicator_abort_requested) {
+        uint16_t slice = ms;
+        if (slice > WS2812_ANIMATION_ABORT_SLICE_MS) {
+            slice = WS2812_ANIMATION_ABORT_SLICE_MS;
+        }
+
+        k_sleep(K_MSEC(slice));
+
+        if (ms >= slice) {
+            ms -= slice;
+        } else {
+            ms = 0;
+        }
+    }
+}
+
 static struct led_rgb scale_rgb(struct led_rgb color, uint16_t numerator, uint16_t denominator) {
     if (denominator == 0) {
         return color;
@@ -753,28 +849,40 @@ static uint16_t fade_step_count(uint16_t duration_ms) {
 static void fade_from_black_to_color(struct led_rgb color, uint16_t duration_ms) {
     uint16_t steps = fade_step_count(duration_ms);
     if (steps == 0) {
-        set_all_pixels(color);
+        if (!indicator_abort_requested) {
+            set_all_pixels(color);
+        }
         return;
     }
 
     uint16_t delay_ms = MAX(1, duration_ms / steps);
     for (uint16_t step = 0; step <= steps; step++) {
+        if (indicator_abort_requested) {
+            return;
+        }
+
         set_all_pixels(scale_rgb(color, step, steps));
-        k_sleep(K_MSEC(delay_ms));
+        interruptible_sleep_ms(delay_ms);
     }
 }
 
 static void fade_from_color_to_black(struct led_rgb color, uint16_t duration_ms) {
     uint16_t steps = fade_step_count(duration_ms);
     if (steps == 0) {
-        set_all_pixels((struct led_rgb){0, 0, 0});
+        if (!indicator_abort_requested) {
+            set_all_pixels((struct led_rgb){0, 0, 0});
+        }
         return;
     }
 
     uint16_t delay_ms = MAX(1, duration_ms / steps);
     for (uint16_t step = 0; step <= steps; step++) {
+        if (indicator_abort_requested) {
+            return;
+        }
+
         set_all_pixels(scale_rgb(color, steps - step, steps));
-        k_sleep(K_MSEC(delay_ms));
+        interruptible_sleep_ms(delay_ms);
     }
 }
 
@@ -790,7 +898,7 @@ static bool periodic_indication_allowed(void) {
 }
 
 static bool indication_allowed(bool periodic) {
-    if (!initialized || !widget_enabled || !activity_active || idle_display_off) {
+    if (!initialized || !widget_enabled || !activity_active || idle_display_target_off) {
         return false;
     }
     if (periodic && !periodic_indication_allowed()) {
@@ -799,14 +907,10 @@ static bool indication_allowed(bool periodic) {
     return true;
 }
 
-static void ws2812_set_idle_display_local(bool off) {
-    if (!initialized || !device_is_ready(led_strip)) {
-        idle_display_off = off;
-        return;
-    }
-
-    k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
-
+/* -------------------------------------------------------------------------
+ * Idle display deferred apply
+ * ------------------------------------------------------------------------- */
+static void apply_idle_display_locked(bool off) {
     if (off) {
         if (!idle_display_off) {
             idle_display_off = true;
@@ -840,12 +944,32 @@ static void ws2812_set_idle_display_local(bool off) {
             }
         }
     }
+}
+
+static void idle_display_work_cb(struct k_work *work) {
+    ARG_UNUSED(work);
+
+    if (!initialized || !device_is_ready(led_strip)) {
+        idle_display_off = idle_display_target_off;
+        return;
+    }
+
+    k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
+
+    if (idle_display_off != idle_display_target_off) {
+        apply_idle_display_locked(idle_display_target_off);
+    }
 
     k_mutex_unlock(&ws2812_lighting_mutex);
 }
 
+static void ws2812_request_idle_display(bool off) {
+    idle_display_target_off = off;
+    k_work_submit(&idle_display_work);
+}
+
 void ws2812_apply_idle_sync(bool off) {
-    ws2812_set_idle_display_local(off);
+    ws2812_request_idle_display(off);
 }
 
 #if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
@@ -883,7 +1007,9 @@ void ws2812_note_activity(void) {
 
     /* Always wake the local half immediately. On split central, the key/activity
      * listeners below mirror this wake to the peripheral when required. */
-    ws2812_set_idle_display_local(false);
+    if (idle_display_target_off) {
+        ws2812_request_idle_display(false);
+    }
 
     ws2812_idle_timer_reset();
 }
@@ -906,7 +1032,7 @@ static void idle_work_handler(struct k_work *work) {
     }
 
     LOG_INF("WS2812 local idle timeout fired after %u min", idle_timeout_minutes);
-    ws2812_set_idle_display_local(true);
+    ws2812_request_idle_display(true);
 }
 
 void ws2812_idle_timer_init(void) {
@@ -931,7 +1057,7 @@ void ws2812_idle_timer_toggle(void) {
         ws2812_idle_timer_reset();
     } else {
         k_work_cancel_delayable(&idle_work);
-        ws2812_set_idle_display_local(false);
+        ws2812_request_idle_display(false);
     }
 
     LOG_INF("WS2812 local idle timer %s (%u min)", idle_timer_enabled ? "ON" : "OFF",
@@ -960,16 +1086,11 @@ bool ws2812_idle_timer_enabled(void) {
 void ws2812_set_indication_enabled(bool enabled) {
     widget_enabled = enabled;
     ws2812_note_activity();
+
     if (initialized && device_is_ready(led_strip)) {
-        k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
-        if (static_lighting_needed()) {
-            /* Caps/persistent status remains authoritative even if temporary
-             * widget flashes are disabled. */
-            sync_static_lighting_locked();
-        }
-        /* With no static owner, toggling the widget must not write black over
-         * normal ZMK underglow. It only enables/disables temporary indicators. */
-        k_mutex_unlock(&ws2812_lighting_mutex);
+        /* Do not lock here. If static state exists, the deferred work will
+         * repaint it after the current animation releases the mutex. */
+        schedule_persistent_sync(false);
     }
 
     LOG_INF("WS2812 temporary indications %s", enabled ? "enabled" : "disabled");
@@ -981,7 +1102,7 @@ void ws2812_toggle_indication_enabled(void) {
 
 static void execute_indicator_request(const struct indicator_request *request) {
     if (request->kind == INDICATOR_KIND_SEPARATOR) {
-        k_sleep(K_MSEC(request->hold_ms));
+        interruptible_sleep_ms(request->hold_ms);
         return;
     }
 
@@ -994,7 +1115,24 @@ static void execute_indicator_request(const struct indicator_request *request) {
         return;
     }
 
+    /* If a static state change already requested an abort, stale automatic
+     * layer ON/OFF flashes are dropped before acquiring the mutex. Manual green
+     * flashes are still allowed because they are explicit user confirmations. */
+    if (indicator_abort_requested &&
+        (request->kind == INDICATOR_KIND_LAYER_ON ||
+         request->kind == INDICATOR_KIND_LAYER_OFF)) {
+        return;
+    }
+
+    bool is_manual = (request->kind == INDICATOR_KIND_MANUAL_LAYER);
+
     k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
+
+    if (is_manual) {
+        /* Manual reset confirmation wins and should run even if a static state
+         * change marked the previous animation abortable. */
+        indicator_abort_requested = false;
+    }
 
     bool had_static_owner = static_lighting_needed();
     bool transient_underglow_was_on = false;
@@ -1011,17 +1149,30 @@ static void execute_indicator_request(const struct indicator_request *request) {
 
     for (uint8_t i = 0; i < request->repeat_count; i++) {
         fade_from_black_to_color(request->color, request->fade_in_ms);
+        if (indicator_abort_requested) {
+            break;
+        }
 
         if (request->hold_ms > 0) {
             set_all_pixels(request->color);
-            k_sleep(K_MSEC(request->hold_ms));
+            interruptible_sleep_ms(request->hold_ms);
+            if (indicator_abort_requested) {
+                break;
+            }
         }
 
         fade_from_color_to_black(request->color, request->fade_out_ms);
+        if (indicator_abort_requested) {
+            break;
+        }
+
         set_all_pixels((struct led_rgb){0, 0, 0});
 
         if (i + 1 < request->repeat_count && request->gap_ms > 0) {
-            k_sleep(K_MSEC(request->gap_ms));
+            interruptible_sleep_ms(request->gap_ms);
+            if (indicator_abort_requested) {
+                break;
+            }
         }
     }
 
@@ -1472,7 +1623,7 @@ static int key_activity_listener_cb(const zmk_event_t *eh) {
     }
 
 #if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
-    bool was_off = idle_display_off;
+    bool was_off = idle_display_target_off;
 #endif
     ws2812_note_activity();
 
@@ -1507,7 +1658,7 @@ static int activity_listener_cb(const zmk_event_t *eh) {
 
     if (ev->state == ZMK_ACTIVITY_ACTIVE) {
 #if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
-        bool was_off = idle_display_off;
+        bool was_off = idle_display_target_off;
 #endif
         activity_active = true;
         ws2812_note_activity();
@@ -1521,15 +1672,13 @@ static int activity_listener_cb(const zmk_event_t *eh) {
         }
 #endif
 
-        if (initialized && device_is_ready(led_strip) && static_lighting_needed()) {
-            k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
-            enable_ext_power_if_needed();
-            redraw_static_lighting_locked();
-            k_mutex_unlock(&ws2812_lighting_mutex);
+        if (initialized && device_is_ready(led_strip)) {
+            /* Deferred redraw: do not block activity events on LED mutex/sleeps. */
+            schedule_persistent_sync(false);
         }
     } else if (ev->state == ZMK_ACTIVITY_SLEEP) {
         activity_active = false;
-        ws2812_set_idle_display_local(true);
+        ws2812_request_idle_display(true);
     }
 
     return ZMK_EV_EVENT_BUBBLE;
@@ -1616,6 +1765,9 @@ static void indicator_init_thread(void *d0, void *d1, void *d2) {
 #endif
 
     initialized = true;
+
+    idle_display_off = false;
+    idle_display_target_off = false;
 
     ws2812_idle_timer_init();
 
