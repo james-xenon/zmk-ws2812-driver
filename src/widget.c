@@ -1409,8 +1409,11 @@ static void layer_indicator_work_cb(struct k_work *work) {
         .timestamp = k_uptime_get(),
     };
 
-    zmk_behavior_queue_add(&event, binding, true, 0);
-    zmk_behavior_queue_add(&event, binding, false, 10);
+    /* Invoke the GLOBAL behavior directly instead of through the shared
+     * behavior queue: that queue also plays the Alt-code macros, so a sync for
+     * the other half would otherwise wait behind a symbol being typed. */
+    zmk_behavior_invoke_binding(&binding, event, true);
+    zmk_behavior_invoke_binding(&binding, event, false);
 }
 
 static int layer_listener_cb(const zmk_event_t *eh) {
@@ -1467,8 +1470,11 @@ static void forward_persistent_layer(uint8_t layer, bool state) {
         .timestamp = k_uptime_get(),
     };
 
-    zmk_behavior_queue_add(&event, binding, true, 0);
-    zmk_behavior_queue_add(&event, binding, false, 10);
+    /* Invoke the GLOBAL behavior directly instead of through the shared
+     * behavior queue: that queue also plays the Alt-code macros, so a sync for
+     * the other half would otherwise wait behind a symbol being typed. */
+    zmk_behavior_invoke_binding(&binding, event, true);
+    zmk_behavior_invoke_binding(&binding, event, false);
 }
 #endif
 
