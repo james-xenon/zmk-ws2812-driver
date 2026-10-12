@@ -7,7 +7,8 @@
  *   layer 2 = Russian SYMB       -> right half, cyan
  *   layer 3 = Russian NUMB       -> left half,  cyan
  *   layer 7 = English SYMB       -> right half, cyan
- *   layer 8 = English NUMB       -> left half,  cyan
+ *   layer 8 = English NUMB       -> left half,  cyan ONLY while layer 7 is active
+ *                                   (holding digits from layer 0/1 must not light cyan)
  *
  * Automatic white/red toggle layers:
  *   layer 1  = KP_MODE
@@ -31,7 +32,12 @@
  *   - running transient flashes can be aborted when static state changes;
  *   - central forwards persistent sync only for layers owned by the other half;
  *   - idle display wake/sleep is deferred to a work item and does not block
- *     key processing during animations.
+ *     key processing during animations;
+ *   - blocking LED work (mutex waits, underglow/ext-power sleeps) runs on a
+ *     dedicated work queue, never on the system work queue that ZMK uses for
+ *     hold-tap/combo/tap-dance timers and the behavior queue (split sync);
+ *   - layer/manual flashes pad their start so both halves begin at the same
+ *     offset even when only one half had to power up the strip first.
  */
 
 #include <string.h>
@@ -276,6 +282,42 @@ static volatile bool caps_lock_active;
  */
 #define WS2812_ANIMATION_ABORT_SLICE_MS 10U
 
+/*
+ * Flash start alignment between halves.
+ *
+ * A half that already owns the strip (Caps / persistent cyan) starts a flash
+ * instantly, while a half that must pause underglow / power ext-power first
+ * starts later. Layer/manual flashes are padded to a common start offset.
+ * Capped so the flash never feels laggy; tune WS2812_FLASH_ALIGN_MAX_MS.
+ */
+#if IS_ENABLED(CONFIG_WS2812_WIDGET_PAUSE_RGB_UNDERGLOW) && IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW)
+#define WS2812_PREP_UNDERGLOW_MS CONFIG_WS2812_WIDGET_UNDERGLOW_OFF_DELAY_MS
+#else
+#define WS2812_PREP_UNDERGLOW_MS 0
+#endif
+
+#if IS_ENABLED(CONFIG_WS2812_WIDGET_USE_EXT_POWER) && IS_ENABLED(CONFIG_ZMK_EXT_POWER)
+#define WS2812_PREP_EXT_POWER_MS CONFIG_WS2812_WIDGET_EXT_POWER_STARTUP_DELAY_MS
+#else
+#define WS2812_PREP_EXT_POWER_MS 0
+#endif
+
+#define WS2812_FLASH_ALIGN_MS (WS2812_PREP_UNDERGLOW_MS + WS2812_PREP_EXT_POWER_MS)
+#define WS2812_FLASH_ALIGN_MAX_MS 150U
+
+/* Central runs its own copy of a GLOBAL flash immediately; the peripheral gets
+ * it over BLE (~one connection interval later). Delay the central slightly. */
+#if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+#define WS2812_CENTRAL_BLE_COMP_MS 15U
+#else
+#define WS2812_CENTRAL_BLE_COMP_MS 0U
+#endif
+
+/* Dedicated work queue for LED work that may block (mutex, k_sleep). Keeps the
+ * system work queue free for ZMK timers and the split behavior queue. */
+#define WS2812_WORKQ_STACK_SIZE 2048
+#define WS2812_WORKQ_PRIORITY (K_LOWEST_APPLICATION_THREAD_PRIO - 1)
+
 /* -------------------------------------------------------------------------
  * Types/state
  * ------------------------------------------------------------------------- */
@@ -334,6 +376,10 @@ static bool normal_ext_power_was_on = true;
 
 K_MUTEX_DEFINE(ws2812_lighting_mutex);
 
+static K_THREAD_STACK_DEFINE(ws2812_workq_stack, WS2812_WORKQ_STACK_SIZE);
+static struct k_work_q ws2812_workq;
+static volatile bool ws2812_workq_started;
+
 /* Deferred static lighting update. Layer/Caps callbacks only mark state dirty
  * and submit this work; they do not wait for the animation mutex. */
 static void persistent_sync_work_cb(struct k_work *work);
@@ -377,8 +423,13 @@ static void schedule_persistent_sync(bool abort_animation) {
         indicator_abort_requested = true;
     }
 
-    k_work_reschedule(&persistent_sync_work,
-                      K_MSEC(WS2812_PERSISTENT_SYNC_COALESCE_MS));
+    if (!ws2812_workq_started) {
+        /* Init thread performs the first static sync itself. */
+        return;
+    }
+
+    k_work_reschedule_for_queue(&ws2812_workq, &persistent_sync_work,
+                                K_MSEC(WS2812_PERSISTENT_SYNC_COALESCE_MS));
 }
 
 /* -------------------------------------------------------------------------
@@ -965,7 +1016,9 @@ static void idle_display_work_cb(struct k_work *work) {
 
 static void ws2812_request_idle_display(bool off) {
     idle_display_target_off = off;
-    k_work_submit(&idle_display_work);
+    if (ws2812_workq_started) {
+        k_work_submit_to_queue(&ws2812_workq, &idle_display_work);
+    }
 }
 
 void ws2812_apply_idle_sync(bool off) {
@@ -1138,6 +1191,8 @@ static void execute_indicator_request(const struct indicator_request *request) {
     bool transient_underglow_was_on = false;
     bool transient_ext_power_was_on = true;
 
+    int64_t prep_started_ms = k_uptime_get();
+
     if (had_static_owner) {
         /* Static state already owns the strip. Make sure its normal-state
          * snapshot exists, then temporarily paint over it. */
@@ -1145,6 +1200,23 @@ static void execute_indicator_request(const struct indicator_request *request) {
     } else {
         transient_underglow_was_on = pause_underglow_if_needed();
         transient_ext_power_was_on = enable_ext_power_if_needed();
+    }
+
+    /* Layer/manual flashes are shown on both halves: pad the start so a half
+     * that skipped the strip power-up does not run ahead of the other one. */
+    if (request->kind == INDICATOR_KIND_LAYER_ON ||
+        request->kind == INDICATOR_KIND_LAYER_OFF ||
+        request->kind == INDICATOR_KIND_MANUAL_LAYER) {
+        uint32_t target_ms = WS2812_FLASH_ALIGN_MS;
+        if (target_ms > WS2812_FLASH_ALIGN_MAX_MS) {
+            target_ms = WS2812_FLASH_ALIGN_MAX_MS;
+        }
+        target_ms += WS2812_CENTRAL_BLE_COMP_MS;
+
+        int64_t spent_ms = k_uptime_get() - prep_started_ms;
+        if (spent_ms < (int64_t)target_ms) {
+            interruptible_sleep_ms((uint16_t)(target_ms - spent_ms));
+        }
     }
 
     for (uint8_t i = 0; i < request->repeat_count; i++) {
@@ -1400,6 +1472,19 @@ static void forward_persistent_layer(uint8_t layer, bool state) {
 }
 #endif
 
+#if WS2812_HALF_IS_LEFT
+/* Layer 8 is also the plain "hold digits" layer from layer 1 (KP_MODE) and
+ * layer 7. It must glow cyan only while the cyan English symbols layer 7 is
+ * active, so the LED state of layer 8 is derived from both layers. */
+static bool eng_symb_layer_on;
+static bool eng_numb_layer_on;
+
+static void update_eng_numb_cyan(void) {
+    ws2812_set_persistent_layer_active(PERSISTENT_LAYER_LEFT_ENG,
+                                       eng_symb_layer_on && eng_numb_layer_on);
+}
+#endif
+
 static int persistent_layer_listener_cb(const zmk_event_t *eh) {
     const struct zmk_layer_state_changed *ev = as_zmk_layer_state_changed(eh);
     if (ev == NULL) {
@@ -1409,6 +1494,17 @@ static int persistent_layer_listener_cb(const zmk_event_t *eh) {
 #if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
     if (layer_needs_peripheral_sync(ev->layer)) {
         forward_persistent_layer(ev->layer, ev->state);
+    }
+#endif
+
+#if WS2812_HALF_IS_LEFT
+    if (ev->layer == PERSISTENT_LAYER_RIGHT_ENG) {
+        eng_symb_layer_on = ev->state;
+        update_eng_numb_cyan();
+    } else if (ev->layer == PERSISTENT_LAYER_LEFT_ENG) {
+        eng_numb_layer_on = ev->state;
+        update_eng_numb_cyan();
+        return 0;
     }
 #endif
 
@@ -1726,6 +1822,14 @@ static void indicator_init_thread(void *d0, void *d1, void *d2) {
         return;
     }
 
+    if (!ws2812_workq_started) {
+        k_work_queue_init(&ws2812_workq);
+        k_work_queue_start(&ws2812_workq, ws2812_workq_stack,
+                           K_THREAD_STACK_SIZEOF(ws2812_workq_stack),
+                           WS2812_WORKQ_PRIORITY, NULL);
+        ws2812_workq_started = true;
+    }
+
     /* Configure half-local persistent layer ownership before initialized=true,
      * so an early GLOBAL lsync update has a valid target slot.
      *
@@ -1745,6 +1849,9 @@ static void indicator_init_thread(void *d0, void *d1, void *d2) {
     ws2812_set_persistent_layer_color(PERSISTENT_LAYER_LEFT_ENG,
                                       PERSISTENT_LAYER_COLOR,
                                       0, WS2812_NUM_PIXELS);
+#if WS2812_HAS_LAYER_EVENTS
+    update_eng_numb_cyan();
+#endif
 #endif
 
 #if WS2812_HALF_IS_RIGHT
