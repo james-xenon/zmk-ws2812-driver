@@ -7,8 +7,8 @@
  *   layer 2 = Russian SYMB       -> right half, cyan
  *   layer 3 = Russian NUMB       -> left half,  cyan
  *   layer 7 = English SYMB       -> right half, cyan
- *   layer 8 = English NUMB       -> left half,  cyan ONLY while layer 7 is active
- *                                   (holding digits from layer 0/1 must not light cyan)
+ *   layer 8 = English NUMB       -> left half,  cyan when LATCHED (tog) or while layer 7 is
+ *                                   active; holding the digits key from layer 1 stays dark
  *
  * Automatic white/red toggle layers:
  *   layer 1  = KP_MODE
@@ -1473,15 +1473,22 @@ static void forward_persistent_layer(uint8_t layer, bool state) {
 #endif
 
 #if WS2812_HALF_IS_LEFT
-/* Layer 8 is also the plain "hold digits" layer from layer 1 (KP_MODE) and
- * layer 7. It must glow cyan only while the cyan English symbols layer 7 is
- * active, so the LED state of layer 8 is derived from both layers. */
+/* Layer 8 is both the latched English numbers layer (combo + tog) and the
+ * plain "hold digits" layer reached from layer 1 (KP_MODE) with the right
+ * thumb key. It glows cyan when it is latched, or while the cyan English
+ * symbols layer 7 is active. A momentary hold with layer 7 off stays dark.
+ * "Momentary" = the digits key was physically down when layer 8 turned on. */
+#define DIGITS_HOLD_POSITION 46
+
 static bool eng_symb_layer_on;
 static bool eng_numb_layer_on;
+static bool eng_numb_momentary;
+static volatile bool digits_hold_key_pressed;
 
 static void update_eng_numb_cyan(void) {
-    ws2812_set_persistent_layer_active(PERSISTENT_LAYER_LEFT_ENG,
-                                       eng_symb_layer_on && eng_numb_layer_on);
+    ws2812_set_persistent_layer_active(
+        PERSISTENT_LAYER_LEFT_ENG,
+        eng_numb_layer_on && (eng_symb_layer_on || !eng_numb_momentary));
 }
 #endif
 
@@ -1503,6 +1510,7 @@ static int persistent_layer_listener_cb(const zmk_event_t *eh) {
         update_eng_numb_cyan();
     } else if (ev->layer == PERSISTENT_LAYER_LEFT_ENG) {
         eng_numb_layer_on = ev->state;
+        eng_numb_momentary = ev->state && digits_hold_key_pressed;
         update_eng_numb_cyan();
         return 0;
     }
@@ -1714,6 +1722,14 @@ void ws2812_indicate_connectivity(void) {
  * peripheral with the lightweight activity heartbeat below. */
 static int key_activity_listener_cb(const zmk_event_t *eh) {
     const struct zmk_position_state_changed *ev = as_zmk_position_state_changed(eh);
+
+#if WS2812_HAS_LAYER_EVENTS && WS2812_HALF_IS_LEFT
+    /* Needs release events too: remember whether the digits key is down. */
+    if (ev != NULL && ev->position == DIGITS_HOLD_POSITION) {
+        digits_hold_key_pressed = ev->state;
+    }
+#endif
+
     if (ev == NULL || !ev->state) {
         return ZMK_EV_EVENT_BUBBLE;
     }
