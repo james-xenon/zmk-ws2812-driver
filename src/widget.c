@@ -7,8 +7,8 @@
  *   layer 2 = Russian SYMB       -> right half, cyan
  *   layer 3 = Russian NUMB       -> left half,  cyan
  *   layer 7 = English SYMB       -> right half, cyan
- *   layer 8 = English NUMB       -> left half,  cyan when latched (tog) or while layer 7
- *                                   is active; a plain hold of the digits key stays dark
+ *   layer 8 = English NUMB       -> left half,  cyan only when latched (tog);
+ *                                   a plain momentary hold stays dark
  *
  * Automatic white/red toggle layers:
  *   layer 1  = KP_MODE
@@ -161,7 +161,7 @@ BUILD_ASSERT(WS2812_NUM_PIXELS > 0 && WS2812_NUM_PIXELS <= 255,
  *
  * New keymap adds:
  *   layer 7 -> English symbols persistent, right half cyan
- *   layer 8 -> English numbers persistent, left half cyan
+ *   layer 8 -> English numbers persistent, left half cyan only when latched
  * ------------------------------------------------------------------------- */
 #define KP_MODE_LAYER                 1
 #define SYMB_LAYER                    2
@@ -222,6 +222,49 @@ static const uint8_t __maybe_unused persistent_sync_layers[] = {
     PERSISTENT_LAYER_LEFT_ENG,
     PERSISTENT_LAYER_RIGHT_ENG,
 };
+#endif
+
+/* -------------------------------------------------------------------------
+ * Layer 8 latched/momentary detection for the LEFT half.
+ *
+ * Layer 8 is used in two ways:
+ *   - latched by combo / &tog NUMB_ENG_NOLIGHT_LAYER
+ *   - momentary by holding keys that switch to layer 8
+ *
+ * Left half must glow cyan only in the latched case.
+ *
+ * Current keymap momentary sources for layer 8:
+ *   position 13 - left outer key in row 2 on layer 7:
+ *                 &bspc_to_layer_ht NUMB_ENG_NOLIGHT_LAYER FSLH
+ *
+ *   position 27 - right outer key in row 2 on layer 7:
+ *                 &bspc_to_layer_ht NUMB_ENG_NOLIGHT_LAYER BSLH
+ *
+ *   position 46 - right thumb digits key on layers 1/7:
+ *                 &thumb_num_sym_fn NUMB_ENG_NOLIGHT_LAYER 0
+ * ------------------------------------------------------------------------- */
+#if WS2812_HALF_IS_LEFT
+static const uint8_t eng_numb_momentary_positions[] = {13, 27, 46};
+
+static bool eng_numb_layer_on;
+static bool eng_numb_momentary;
+static volatile uint8_t eng_numb_momentary_key_count;
+
+static bool eng_numb_is_momentary_position(uint8_t position) {
+    for (size_t i = 0; i < ARRAY_SIZE(eng_numb_momentary_positions); i++) {
+        if (eng_numb_momentary_positions[i] == position) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static void update_eng_numb_cyan(void) {
+    ws2812_set_persistent_layer_active(
+        PERSISTENT_LAYER_LEFT_ENG,
+        eng_numb_layer_on && !eng_numb_momentary);
+}
 #endif
 
 /* -------------------------------------------------------------------------
@@ -1202,11 +1245,11 @@ static void layer_indicator_work_cb(struct k_work *work) {
         .timestamp = k_uptime_get(),
     };
 
-    /* ws2812_lsync does all its work on press (release is a no-op), so only
-     * the press is sent: half the BLE traffic. It is invoked directly because
-     * the behavior queue is shared with the Alt-code macros and would delay the
-     * other half's update behind a symbol being typed. */
-    zmk_behavior_invoke_binding(&binding, event, true);
+    /* Use the old ZMK behavior queue path. It is the mechanism that behaved
+     * predictably in the old widget. ws2812_lsync does its work on press and
+     * ignores release, but keeping press+release matches the old split sync. */
+    zmk_behavior_queue_add(&event, binding, true, 0);
+    zmk_behavior_queue_add(&event, binding, false, 10);
 }
 
 static int layer_listener_cb(const zmk_event_t *eh) {
@@ -1263,31 +1306,11 @@ static void forward_persistent_layer(uint8_t layer, bool state) {
         .timestamp = k_uptime_get(),
     };
 
-    /* ws2812_lsync does all its work on press (release is a no-op), so only
-     * the press is sent: half the BLE traffic. It is invoked directly because
-     * the behavior queue is shared with the Alt-code macros and would delay the
-     * other half's update behind a symbol being typed. */
-    zmk_behavior_invoke_binding(&binding, event, true);
-}
-#endif
-
-#if WS2812_HALF_IS_LEFT
-/* Layer 8 is both the latched English numbers layer (combo + tog) and the
- * plain "hold digits" layer reached from layer 1 (KP_MODE) with the right
- * thumb key. It glows cyan when latched, or while the cyan English symbols
- * layer 7 is active; a momentary hold with layer 7 off stays dark.
- * "Momentary" = the digits key was physically down when layer 8 turned on. */
-#define DIGITS_HOLD_POSITION 46
-
-static bool eng_symb_layer_on;
-static bool eng_numb_layer_on;
-static bool eng_numb_momentary;
-static volatile bool digits_hold_key_pressed;
-
-static void update_eng_numb_cyan(void) {
-    ws2812_set_persistent_layer_active(
-        PERSISTENT_LAYER_LEFT_ENG,
-        eng_numb_layer_on && (eng_symb_layer_on || !eng_numb_momentary));
+    /* Old working split-sync mechanism. Do not replace with direct invoke here:
+     * the behavior queue is the path that kept halves predictable in the old
+     * widget. */
+    zmk_behavior_queue_add(&event, binding, true, 0);
+    zmk_behavior_queue_add(&event, binding, false, 10);
 }
 #endif
 
@@ -1304,12 +1327,21 @@ static int persistent_layer_listener_cb(const zmk_event_t *eh) {
 #endif
 
 #if WS2812_HALF_IS_LEFT
-    if (ev->layer == PERSISTENT_LAYER_RIGHT_ENG) {
-        eng_symb_layer_on = ev->state;
-        update_eng_numb_cyan();
-    } else if (ev->layer == PERSISTENT_LAYER_LEFT_ENG) {
+    /*
+     * Layer 8 on the left half is cyan only when latched.
+     *
+     * If layer 8 became active while one of the momentary keys was held,
+     * mark it as momentary and keep the left half dark.
+     */
+    if (ev->layer == PERSISTENT_LAYER_LEFT_ENG) {
         eng_numb_layer_on = ev->state;
-        eng_numb_momentary = ev->state && digits_hold_key_pressed;
+
+        if (ev->state) {
+            eng_numb_momentary = (eng_numb_momentary_key_count > 0U);
+        } else {
+            eng_numb_momentary = false;
+        }
+
         update_eng_numb_cyan();
         return 0;
     }
@@ -1523,9 +1555,19 @@ static int key_activity_listener_cb(const zmk_event_t *eh) {
     const struct zmk_position_state_changed *ev = as_zmk_position_state_changed(eh);
 
 #if WS2812_HAS_LAYER_EVENTS && WS2812_HALF_IS_LEFT
-    /* Needs release events too: remember whether the digits key is down. */
-    if (ev != NULL && ev->position == DIGITS_HOLD_POSITION) {
-        digits_hold_key_pressed = ev->state;
+    /*
+     * Track both press and release of keys that can momentary activate layer 8.
+     * If layer 8 turns on while at least one such key is physically down,
+     * treat it as a momentary hold, not as a latch.
+     */
+    if (ev != NULL && eng_numb_is_momentary_position(ev->position)) {
+        if (ev->state) {
+            if (eng_numb_momentary_key_count < 255U) {
+                eng_numb_momentary_key_count++;
+            }
+        } else if (eng_numb_momentary_key_count > 0U) {
+            eng_numb_momentary_key_count--;
+        }
     }
 #endif
 
@@ -1644,7 +1686,7 @@ static void indicator_init_thread(void *d0, void *d1, void *d2) {
      *
      * Left half:
      *   layer 3 = Russian NUMB, cyan
-     *   layer 8 = English NUMB, cyan
+     *   layer 8 = English NUMB, cyan only when latched
      *
      * Right half:
      *   layer 2 = Russian SYMB, cyan
