@@ -171,7 +171,7 @@ LEFTHAND layer 20 is not here because keymap explicitly calls
 	 BIT(GAMING1_LAYER) |                                                             \
 	 BIT(SPEEDTYPE_LAYER))
 
-#define WS2812_WIDGET_LAYER_COLOR_MANUAL_ORANGE 0xFF5500
+#define WS2812_WIDGET_LAYER_COLOR_MANUAL_ORANGE 0xFF4500
 
 /* The central only forwards persistent layers that are drawn on the other half. */
 #if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
