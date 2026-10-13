@@ -646,6 +646,23 @@ static void sync_static_lighting_locked(void) {
 	}
 }
 
+/* Listeners (layer change, Caps, lsync, idle) must NEVER wait for a running
+ * flash: the indicator thread holds ws2812_lighting_mutex for the whole
+ * animation (~1 s), and blocking the listener blocks ZMK event processing,
+ * i.e. the layer switch itself. So the owner state is written first and the
+ * redraw is done at once if the mutex is free, otherwise it is deferred to the
+ * indicator thread, which redraws right after the animation ends. */
+static volatile bool static_sync_deferred;
+
+static void sync_static_lighting_or_defer(void) {
+	if (k_mutex_lock(&ws2812_lighting_mutex, K_NO_WAIT) == 0) {
+		sync_static_lighting_locked();
+		k_mutex_unlock(&ws2812_lighting_mutex);
+	} else {
+		static_sync_deferred = true;
+	}
+}
+
 void ws2812_set_persistent_layer_color(uint8_t layer, uint32_t color_hex,
 				       uint8_t start_pixel, uint8_t num_pixels) {
 	int slot = -1;
@@ -704,17 +721,14 @@ void ws2812_set_persistent_layer_active(uint8_t layer, bool active) {
 		return;
 	}
 
-	/* Change the owner state while holding the same mutex as animations.
-	 * Otherwise an activation during a transient flash could capture the
-	 * temporarily-paused underglow as the user's original state. */
-	k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
-
+	/* Never block on a running animation (see sync_static_lighting_or_defer).
+	 * The redraw/snapshot itself still happens only under the animation mutex,
+	 * so a transient flash can never leak its paused underglow into the
+	 * saved "normal" state. */
 	if (persistent_layers[slot].active != active) {
 		persistent_layers[slot].active = active;
-		sync_static_lighting_locked();
+		sync_static_lighting_or_defer();
 	}
-
-	k_mutex_unlock(&ws2812_lighting_mutex);
 }
 
 /* -------------------------------------------------------------------------
@@ -737,14 +751,10 @@ static int hid_caps_listener_cb(const zmk_event_t *eh) {
 	/* Update the owner state under the animation mutex. If a host report
 	arrives during a blink, the blink restores the true pre-blink lighting
 	first; only then does Caps take ownership and snapshot that state. */
-	k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
-
 	if (new_caps_state != caps_lock_active) {
 		caps_lock_active = new_caps_state;
-		sync_static_lighting_locked();
+		sync_static_lighting_or_defer();
 	}
-
-	k_mutex_unlock(&ws2812_lighting_mutex);
 
 	LOG_DBG("Host Caps Lock state: %s", new_caps_state ? "ON" : "OFF");
 	return 0;
@@ -993,17 +1003,14 @@ void ws2812_set_indication_enabled(bool enabled) {
 	ws2812_note_activity();
 
 	if (initialized && device_is_ready(led_strip)) {
-		k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
-
 		if (static_lighting_needed()) {
 			/* Caps/persistent status remains authoritative even if temporary
 			 * widget flashes are disabled. */
-			sync_static_lighting_locked();
+			sync_static_lighting_or_defer();
 		}
 
 		/* With no static owner, toggling the widget must not write black over
 		 * normal ZMK underglow. It only enables/disables temporary indicators. */
-		k_mutex_unlock(&ws2812_lighting_mutex);
 	}
 
 	LOG_INF("WS2812 temporary indications %s", enabled ? "enabled" : "disabled");
@@ -1075,6 +1082,16 @@ static void execute_indicator_request(const struct indicator_request *request) {
 	}
 
 	k_mutex_unlock(&ws2812_lighting_mutex);
+
+	/* A layer/Caps change that arrived during the animation was only recorded
+	 * (listeners do not wait). Apply it now, after underglow is restored.
+	 * Set after the check above but before unlock is caught here as well. */
+	if (static_sync_deferred) {
+		k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
+		static_sync_deferred = false;
+		sync_static_lighting_locked();
+		k_mutex_unlock(&ws2812_lighting_mutex);
+	}
 }
 
 static void enqueue_indicator(struct indicator_request request, bool periodic) {
@@ -1628,10 +1645,13 @@ static int activity_listener_cb(const zmk_event_t *eh) {
 #endif
 
 		if (initialized && device_is_ready(led_strip) && static_lighting_needed()) {
-			k_mutex_lock(&ws2812_lighting_mutex, K_FOREVER);
-			enable_ext_power_if_needed();
-			redraw_static_lighting_locked();
-			k_mutex_unlock(&ws2812_lighting_mutex);
+			/* Do not wait for a running flash: it redraws static lighting itself
+			 * when it finishes. */
+			if (k_mutex_lock(&ws2812_lighting_mutex, K_NO_WAIT) == 0) {
+				enable_ext_power_if_needed();
+				redraw_static_lighting_locked();
+				k_mutex_unlock(&ws2812_lighting_mutex);
+			}
 		}
 	} else if (ev->state == ZMK_ACTIVITY_SLEEP) {
 		activity_active = false;
