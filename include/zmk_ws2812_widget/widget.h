@@ -9,8 +9,6 @@
  */
 void ws2812_note_activity(void);
 
-void ws2812_idle_timeout_set(uint32_t minutes);
-
 /**
  * @brief Enable or disable all WS2812 widget indications.
  */
