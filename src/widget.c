@@ -136,8 +136,8 @@ Persistent layer configuration
 Old working logic preserved:
 layer 2 -> right half cyan
 layer 3 -> left half cyan
-New keymap adds:
-layer 7 -> English symbols persistent, right half cyan
+English persistent layers:
+layer 7 -> English symbols persistent, cyan on both halves
 layer 8 -> English numbers persistent, left half cyan only when latched
 ------------------------------------------------------------------------- */
 #define KP_MODE_LAYER                 1
@@ -1272,7 +1272,6 @@ static __maybe_unused struct indicator_request make_manual_layer_request_with_co
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE) && WS2812_HAS_LAYER_EVENTS
 static struct k_work_delayable layer_indicator_work;
 static bool pending_layer_state;
-static uint8_t pending_layer_id;
 static bool pending_layer_valid;
 static uint32_t manual_layer_suppress_until_ms;
 #endif
@@ -1357,7 +1356,6 @@ static void layer_indicator_work_cb(struct k_work *work) {
 	}
 
 	bool state = pending_layer_state;
-	uint8_t layer = pending_layer_id;
 	pending_layer_valid = false;
 
 	/*
@@ -1376,15 +1374,6 @@ static void layer_indicator_work_cb(struct k_work *work) {
 		.param1 = state ? 1 : 0,
 		.param2 = 0,
 	};
-
-	/* KP_MODE (layer 1) uses the same dedicated orange manual indication as
-	 * reset_kp_mode_green_flash. Other layers and all layer-OFF indications
-	 * retain their existing white/red sync behavior. The widget behavior has
-	 * GLOBAL locality, so the orange flash reaches both halves. */
-	if (state && layer == KP_MODE_LAYER) {
-		binding.behavior_dev = DEVICE_DT_NAME(DT_NODELABEL(ws2812_wdg));
-		binding.param1 = 9;
-	}
 
 	struct zmk_behavior_binding_event event = {
 		.position = 0,
@@ -1406,7 +1395,6 @@ static int layer_listener_cb(const zmk_event_t *eh) {
 	}
 
 	pending_layer_state = ev->state;
-	pending_layer_id = ev->layer;
 	pending_layer_valid = true;
 
 	uint32_t delay_ms = CONFIG_WS2812_WIDGET_LAYER_DEBOUNCE_MS;
@@ -1844,6 +1832,7 @@ static void indicator_init_thread(void *d0, void *d1, void *d2) {
 	 *
 	 * Left half:
 	 *   layer 3 = Russian NUMB, cyan
+	 *   layer 7 = English SYMB, cyan
 	 *   layer 8 = English NUMB, cyan only when latched
 	 *
 	 * Right half:
@@ -1855,6 +1844,11 @@ static void indicator_init_thread(void *d0, void *d1, void *d2) {
 					  PERSISTENT_LAYER_COLOR,
 					  0, WS2812_NUM_PIXELS);
 	ws2812_set_persistent_layer_color(PERSISTENT_LAYER_LEFT_ENG,
+					  PERSISTENT_LAYER_COLOR,
+					  0, WS2812_NUM_PIXELS);
+	/* Layer 7 is the English symbol layer and is cyan on both halves. The
+	 * central half therefore needs a local slot as well as peripheral sync. */
+	ws2812_set_persistent_layer_color(PERSISTENT_LAYER_RIGHT_ENG,
 					  PERSISTENT_LAYER_COLOR,
 					  0, WS2812_NUM_PIXELS);
 
