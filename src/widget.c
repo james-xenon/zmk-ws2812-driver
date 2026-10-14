@@ -968,10 +968,10 @@ so only central-originated activity needs to be mirrored. */
 #define WS2812_ACTIVITY_SYNC_INTERVAL_MS 10000U
 static int64_t last_activity_sync_ms;
 
-static void forward_activity_to_all_halves(void) {
+static void forward_activity_to_all_halves_with_param(uint8_t param1) {
 	struct zmk_behavior_binding binding = {
 		.behavior_dev = DEVICE_DT_NAME(DT_NODELABEL(ws2812_async)),
-		.param1 = 0,
+		.param1 = param1,
 		.param2 = 0,
 	};
 
@@ -980,10 +980,11 @@ static void forward_activity_to_all_halves(void) {
 		.timestamp = k_uptime_get(),
 	};
 
-	int rc = zmk_behavior_queue_add(&event, binding, true, 0);
-	if (rc != 0) {
-		LOG_WRN("WS2812 activity sync queue full: %d", rc);
-	}
+	zmk_behavior_queue_add(&event, binding, true, 0);
+}
+
+static void forward_activity_to_all_halves(void) {
+	forward_activity_to_all_halves_with_param(0);
 }
 #endif
 
@@ -1056,9 +1057,13 @@ void ws2812_idle_timeout_change(int8_t direction) {
 		idle_timeout_minutes--;
 	}
 
-	/* &rgb_timer is GLOBAL, so both halves update the same timeout value. */
 	idle_timer_enabled = true;
 	ws2812_idle_timer_reset();
+
+#if IS_ENABLED(CONFIG_ZMK_SPLIT) && IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+	/* Передаем новое значение таймера на правую половину */
+	forward_activity_to_all_halves_with_param(idle_timeout_minutes);
+#endif
 
 	LOG_INF("WS2812 local idle timeout: %u min (timer ON)", idle_timeout_minutes);
 }

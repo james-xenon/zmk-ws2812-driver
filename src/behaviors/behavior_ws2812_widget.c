@@ -28,6 +28,15 @@ Binding parameter:
 static int on_keymap_binding_pressed(struct zmk_behavior_binding *binding,
 				     struct zmk_behavior_binding_event event) {
 #if IS_ENABLED(CONFIG_WS2812_WIDGET)
+	/* Если пришёл служебный параметр со значением времени таймаута (> 9) */
+	if (binding->param1 > 9) {
+		uint8_t new_timeout = binding->param1;
+		ws2812_note_activity();
+		/* Выставляем новое время таймера локально на периферии */
+		ws2812_idle_timeout_change((int8_t)(new_timeout - ws2812_get_widget_brightness()));
+		return ZMK_BEHAVIOR_OPAQUE;
+	}
+
 	ws2812_note_activity();
 	switch (binding->param1) {
 	case 1:
