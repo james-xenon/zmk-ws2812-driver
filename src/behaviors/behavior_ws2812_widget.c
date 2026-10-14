@@ -6,15 +6,15 @@
 #include <drivers/behavior.h>
 
 #include <zmk/behavior.h>
-
 #include <zmk_ws2812_widget/widget.h>
 
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
+void ws2812_indicate_layer_orange(void);
+
 static int __maybe_unused behavior_ws2812_wdg_init(const struct device *dev) {
     return 0;
 }
-
 /*
  * Binding parameter:
  *   &ws2812_wdg 0 = manual layer blink
@@ -26,12 +26,12 @@ static int __maybe_unused behavior_ws2812_wdg_init(const struct device *dev) {
  *   &ws2812_wdg 6 = widget brightness DOWN by 10%
  *   &ws2812_wdg 7 = widget brightness UP by 10%
  *   &ws2812_wdg 8 = reset widget brightness to 50%
+ *   &ws2812_wdg 9 = orange manual layer blink (KP_MODE / layer 1 reset)
  */
 static int on_keymap_binding_pressed(struct zmk_behavior_binding *binding,
                                      struct zmk_behavior_binding_event event) {
 #if IS_ENABLED(CONFIG_WS2812_WIDGET)
     ws2812_note_activity();
-
     switch (binding->param1) {
     case 1:
 #if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING) && IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY)
@@ -50,7 +50,6 @@ static int on_keymap_binding_pressed(struct zmk_behavior_binding *binding,
     case 4:
         ws2812_set_indication_enabled(false);
         break;
-
     case 5:
 #if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING) && IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY)
         ws2812_indicate_battery_both();
@@ -68,7 +67,9 @@ static int on_keymap_binding_pressed(struct zmk_behavior_binding *binding,
     case 8:
         ws2812_reset_widget_brightness();
         break;
-
+    case 9:
+        ws2812_indicate_layer_orange();
+        break;
     case 0:
     default:
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE)
@@ -85,7 +86,6 @@ static int on_keymap_binding_released(struct zmk_behavior_binding *binding,
                                       struct zmk_behavior_binding_event event) {
     return ZMK_BEHAVIOR_OPAQUE;
 }
-
 static const struct behavior_driver_api __maybe_unused behavior_ws2812_wdg_driver_api = {
     .locality = BEHAVIOR_LOCALITY_GLOBAL,
     .binding_pressed = on_keymap_binding_pressed,
@@ -94,7 +94,6 @@ static const struct behavior_driver_api __maybe_unused behavior_ws2812_wdg_drive
     .get_parameter_metadata = zmk_behavior_get_empty_param_metadata,
 #endif
 };
-
 #define WS2812_WDG_INST(n)                                                                        \
     BEHAVIOR_DT_INST_DEFINE(n, behavior_ws2812_wdg_init, NULL, NULL, NULL, POST_KERNEL,           \
                             CONFIG_KERNEL_INIT_PRIORITY_DEFAULT, &behavior_ws2812_wdg_driver_api);
