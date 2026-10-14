@@ -1,75 +1,104 @@
 #define DT_DRV_COMPAT zmk_behavior_ws2812_widget
+
 #include <zephyr/device.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/util.h>
 #include <drivers/behavior.h>
 #include <zmk/behavior.h>
 #include <zmk_ws2812_widget/widget.h>
+
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 void ws2812_indicate_layer_orange(void);
+void ws2812_idle_timeout_set(uint32_t minutes);
 
-static int __maybe_unused behavior_ws2812_wdg_init(const struct device *dev) {
+static int __maybe_unused behavior_ws2812_wdg_init(const struct device *dev)
+{
 	return 0;
 }
 
 /*
 Binding parameter:
-&ws2812_wdg 0 = manual layer blink
-&ws2812_wdg 1 = manual battery blink (local half only)
-&ws2812_wdg 2 = toggle all WS2812 indication ON/OFF
-&ws2812_wdg 3 = force indication ON
-&ws2812_wdg 4 = force indication OFF
-&ws2812_wdg 5 = battery blink BOTH halves (left then right)
-&ws2812_wdg 6 = widget brightness DOWN by 10%
-&ws2812_wdg 7 = widget brightness UP by 10%
-&ws2812_wdg 8 = reset widget brightness to 50%
-&ws2812_wdg 9 = manual layer blink orange (KP_MODE/layer 1 reset)
+ &ws2812_wdg 0 = manual layer blink
+ &ws2812_wdg 1 = manual battery blink (local half only)
+ &ws2812_wdg 2 = toggle all WS2812 indication ON/OFF
+ &ws2812_wdg 3 = force indication ON
+ &ws2812_wdg 4 = force indication OFF
+ &ws2812_wdg 5 = battery blink BOTH halves (left then right)
+ &ws2812_wdg 6 = widget brightness DOWN by 10%
+ &ws2812_wdg 7 = widget brightness UP by 10%
+ &ws2812_wdg 8 = reset widget brightness to 50%
+ &ws2812_wdg 9 = manual layer blink orange (KP_MODE/layer 1 reset)
+
+ &ws2812_wdg 10..69 = set idle timeout to 1..60 minutes.
+                      10 means 1 minute, 11 means 2 minutes, ..., 69 means 60 minutes.
 */
+
+#define WS2812_WDG_TIMEOUT_PARAM_FIRST 10
+#define WS2812_WDG_TIMEOUT_PARAM_LAST  69
+
 static int on_keymap_binding_pressed(struct zmk_behavior_binding *binding,
-				     struct zmk_behavior_binding_event event) {
+				     struct zmk_behavior_binding_event event)
+{
 #if IS_ENABLED(CONFIG_WS2812_WIDGET)
-	/* Если пришёл служебный параметр со значением времени таймаута (> 9) */
-	if (binding->param1 > 9) {
-		uint8_t new_timeout = binding->param1;
-		ws2812_note_activity();
-		/* Выставляем новое время таймера локально на периферии */
-		ws2812_idle_timeout_change((int8_t)(new_timeout - ws2812_get_widget_brightness()));
+	uint8_t param = binding->param1;
+
+	ws2812_note_activity();
+
+	if (param >= WS2812_WDG_TIMEOUT_PARAM_FIRST) {
+		uint32_t minutes;
+
+		if (param > WS2812_WDG_TIMEOUT_PARAM_LAST) {
+			minutes = 60U;
+		} else {
+			minutes = (uint32_t)param - (WS2812_WDG_TIMEOUT_PARAM_FIRST - 1U);
+		}
+
+		ws2812_idle_timeout_set(minutes);
 		return ZMK_BEHAVIOR_OPAQUE;
 	}
 
-	ws2812_note_activity();
-	switch (binding->param1) {
+	switch (param) {
 	case 1:
 #if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING) && IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY)
 		ws2812_indicate_battery();
 #endif
 		break;
+
 	case 2:
 		ws2812_toggle_indication_enabled();
 		break;
+
 	case 3:
 		ws2812_set_indication_enabled(true);
 		break;
+
 	case 4:
 		ws2812_set_indication_enabled(false);
 		break;
+
 	case 5:
 #if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING) && IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_BATTERY)
 		ws2812_indicate_battery_both();
 #endif
 		break;
+
 	case 6:
 		ws2812_change_widget_brightness(-1);
 		break;
+
 	case 7:
 		ws2812_change_widget_brightness(1);
 		break;
+
 	case 8:
 		ws2812_reset_widget_brightness();
 		break;
+
 	case 9:
 		ws2812_indicate_layer_orange();
 		break;
+
 	case 0:
 	default:
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE)
@@ -78,11 +107,16 @@ static int on_keymap_binding_pressed(struct zmk_behavior_binding *binding,
 		break;
 	}
 #endif
+
 	return ZMK_BEHAVIOR_OPAQUE;
 }
 
 static int on_keymap_binding_released(struct zmk_behavior_binding *binding,
-				      struct zmk_behavior_binding_event event) {
+				      struct zmk_behavior_binding_event event)
+{
+	ARG_UNUSED(binding);
+	ARG_UNUSED(event);
+
 	return ZMK_BEHAVIOR_OPAQUE;
 }
 
@@ -96,7 +130,7 @@ static const struct behavior_driver_api __maybe_unused behavior_ws2812_wdg_drive
 };
 
 #define WS2812_WDG_INST(n)                                                                               \
-	BEHAVIOR_DT_INST_DEFINE(n, behavior_ws2812_wdg_init, NULL, NULL, NULL, POST_KERNEL,            \
+	BEHAVIOR_DT_INST_DEFINE(n, behavior_ws2812_wdg_init, NULL, NULL, NULL, POST_KERNEL,             \
 				CONFIG_KERNEL_INIT_PRIORITY_DEFAULT, &behavior_ws2812_wdg_driver_api);
 
 DT_INST_FOREACH_STATUS_OKAY(WS2812_WDG_INST)
