@@ -1861,11 +1861,6 @@ static void indicator_init_thread(void *d0, void *d1, void *d2) {
 	ws2812_set_persistent_layer_color(PERSISTENT_LAYER_LEFT_ENG,
 					  PERSISTENT_LAYER_COLOR,
 					  0, WS2812_NUM_PIXELS);
-	/* Layer 7 is the English symbol layer and is cyan on both halves. The
-	 * central half therefore needs a local slot as well as peripheral sync. */
-	ws2812_set_persistent_layer_color(PERSISTENT_LAYER_RIGHT_ENG,
-					  PERSISTENT_LAYER_COLOR,
-					  0, WS2812_NUM_PIXELS);
 
 #if WS2812_HAS_LAYER_EVENTS
 	update_eng_numb_cyan();
