@@ -82,6 +82,12 @@ void ws2812_set_persistent_layer_color(uint8_t layer, uint32_t color_hex,
  */
 void ws2812_set_persistent_layer_active(uint8_t layer, bool active);
 
+/**
+ * @brief Toggle only the persistent cyan indication for active layers.
+ *        Layer state tracking and all other widget indications remain active.
+ */
+void ws2812_toggle_persistent_layer_cyan(void);
+
 void ws2812_idle_timer_reset(void);
 
 void ws2812_idle_timer_toggle(void);

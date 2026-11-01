@@ -295,6 +295,8 @@ static const struct device *const led_strip = DEVICE_DT_GET(WS2812_STRIP_NODE);
 static struct led_rgb pixels[WS2812_NUM_PIXELS];
 static struct led_rgb output_pixels[WS2812_NUM_PIXELS];
 static struct persistent_layer_config persistent_layers[MAX_PERSISTENT_LAYERS];
+/* The layer states keep updating while this is false; only their cyan rendering is hidden. */
+static bool persistent_layer_cyan_enabled = true;
 static uint8_t widget_brightness_percent = WS2812_WIDGET_BRIGHTNESS_DEFAULT;
 static bool initialized;
 static bool widget_enabled = IS_ENABLED(CONFIG_WS2812_WIDGET_ENABLED_ON_START);
@@ -632,7 +634,7 @@ static bool any_persistent_layer_active(void) {
 }
 
 static bool static_lighting_needed(void) {
-	if (any_persistent_layer_active()) {
+	if (persistent_layer_cyan_enabled && any_persistent_layer_active()) {
 		return true;
 	}
 
@@ -648,12 +650,14 @@ static bool static_lighting_needed(void) {
 static void redraw_static_lighting_locked(void) {
 	buffer_fill((struct led_rgb){0, 0, 0});
 
-	/* Base static layer color first. */
-	for (int i = 0; i < MAX_PERSISTENT_LAYERS; i++) {
-		if (persistent_layers[i].configured && persistent_layers[i].active) {
-			buffer_range(persistent_layers[i].color,
-				     persistent_layers[i].start_pixel,
-				     persistent_layers[i].num_pixels);
+	/* Persistent cyan layer color is independently switchable. */
+	if (persistent_layer_cyan_enabled) {
+		for (int i = 0; i < MAX_PERSISTENT_LAYERS; i++) {
+			if (persistent_layers[i].configured && persistent_layers[i].active) {
+				buffer_range(persistent_layers[i].color,
+					     persistent_layers[i].start_pixel,
+					     persistent_layers[i].num_pixels);
+			}
 		}
 	}
 
@@ -772,6 +776,17 @@ void ws2812_set_persistent_layer_active(uint8_t layer, bool active) {
 		persistent_layers[slot].active = active;
 		ws2812_request_static_sync(true);
 	}
+}
+
+void ws2812_toggle_persistent_layer_cyan(void) {
+	persistent_layer_cyan_enabled = !persistent_layer_cyan_enabled;
+
+	/* Re-render the persistent layer color without interrupting a transient
+	 * flash. If the strip is busy, the new state is applied after that flash. */
+	ws2812_request_static_sync(false);
+
+	LOG_INF("Persistent cyan layer indication: %s",
+		persistent_layer_cyan_enabled ? "enabled" : "disabled");
 }
 
 /* -------------------------------------------------------------------------

@@ -27,6 +27,7 @@ static int __maybe_unused behavior_ws2812_wdg_init(const struct device *dev) {
  *   &ws2812_wdg 7 = widget brightness UP by 10%
  *   &ws2812_wdg 8 = reset widget brightness to 50%
  *   &ws2812_wdg 9 = orange manual layer blink (KP_MODE / layer 1 reset)
+ *   &ws2812_wdg 10 = toggle persistent cyan layer indication only
  */
 static int on_keymap_binding_pressed(struct zmk_behavior_binding *binding,
                                      struct zmk_behavior_binding_event event) {
@@ -70,6 +71,11 @@ static int on_keymap_binding_pressed(struct zmk_behavior_binding *binding,
     case 9:
         ws2812_indicate_layer_orange();
         break;
+
+    case 10:
+        ws2812_toggle_persistent_layer_cyan();
+        break;
+
     case 0:
     default:
 #if IS_ENABLED(CONFIG_WS2812_WIDGET_SHOW_LAYER_CHANGE)
