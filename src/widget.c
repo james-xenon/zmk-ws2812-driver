@@ -143,6 +143,7 @@ layer 8 -> English numbers persistent, left half cyan only when latched
 #define KP_MODE_LAYER                 1
 #define SYMB_LAYER                    2
 #define NUMB_LAYER                    3
+#define NUMB_NOLIGHT_LAYER            4
 #define SYMB_ENG_LAYER                7
 #define NUMB_ENG_NOLIGHT_LAYER        8
 #define NAV2_LAYER                    13
@@ -171,6 +172,21 @@ LEFTHAND layer 20 is not here because keymap explicitly calls
 	 BIT(NAV2_LAYER) |                                                                \
 	 BIT(GAMING1_LAYER) |                                                             \
 	 BIT(SPEEDTYPE_LAYER))
+
+/*
+ * Service hold behaviors temporarily hide a higher automatic layer and expose
+ * a lower working layer. Those internal swaps must not produce the normal
+ * white/red layer-toggle confirmation.
+ *
+ * Pair only the transitions that actually exist in the keymap:
+ *   SPEEDTYPE -> SYMB_LAYER
+ *   SPEEDTYPE -> NUMB_ENG_NOLIGHT_LAYER
+ *   GAMING1   -> NUMB_NOLIGHT_LAYER
+ *
+ * Direct toggles of SPEEDTYPE/GAMING1 and all KP_MODE/NAV2 changes keep their
+ * normal indications.
+ */
+#define WS2812_SILENT_TRANSITION_PAIR_WINDOW_MS 50U
 
 #define WS2812_WIDGET_LAYER_COLOR_MANUAL_ORANGE 0xFF4500
 
@@ -1288,6 +1304,9 @@ static __maybe_unused struct indicator_request make_manual_layer_request_with_co
 static struct k_work_delayable layer_indicator_work;
 static bool pending_layer_state;
 static bool pending_layer_valid;
+static uint8_t pending_layer;
+static uint32_t pending_layer_event_ms;
+static uint32_t silent_return_layer_mask;
 static uint32_t manual_layer_suppress_until_ms;
 #endif
 
@@ -1337,6 +1356,19 @@ static bool layer_is_automatic_toggle_layer(uint8_t layer) {
 	}
 
 	return (WS2812_AUTOMATIC_TOGGLE_LAYER_MASK & BIT(layer)) != 0;
+}
+
+static bool layer_is_silent_transition_pair(uint8_t parent_layer, uint8_t target_layer) {
+	if (parent_layer == SPEEDTYPE_LAYER) {
+		return target_layer == SYMB_LAYER ||
+		       target_layer == NUMB_ENG_NOLIGHT_LAYER;
+	}
+
+	if (parent_layer == GAMING1_LAYER) {
+		return target_layer == NUMB_NOLIGHT_LAYER;
+	}
+
+	return false;
 }
 
 static bool layer_should_trigger(uint8_t layer) {
@@ -1405,12 +1437,48 @@ static void layer_indicator_work_cb(struct k_work *work) {
 static int layer_listener_cb(const zmk_event_t *eh) {
 	const struct zmk_layer_state_changed *ev = as_zmk_layer_state_changed(eh);
 
-	if (!initialized || ev == NULL || !layer_should_trigger(ev->layer)) {
+	if (!initialized || ev == NULL) {
 		return 0;
 	}
 
+	/*
+	 * The service hold macros turn an automatic parent layer OFF and then
+	 * immediately activate their lower target layer. Catch the target-layer
+	 * ON event before the delayed red OFF indication fires.
+	 *
+	 * Remember the parent until key release, then suppress its matching white
+	 * ON indication too. The short pairing window prevents an unrelated layer
+	 * activation from being treated as part of the service transition.
+	 */
+	if (ev->state && pending_layer_valid && !pending_layer_state &&
+	    layer_is_automatic_toggle_layer(pending_layer) &&
+	    layer_is_silent_transition_pair(pending_layer, ev->layer) &&
+	    (uint32_t)(k_uptime_get_32() - pending_layer_event_ms) <=
+		WS2812_SILENT_TRANSITION_PAIR_WINDOW_MS) {
+		silent_return_layer_mask |= BIT(pending_layer);
+		pending_layer_valid = false;
+		k_work_cancel_delayable(&layer_indicator_work);
+		return 0;
+	}
+
+	if (!layer_should_trigger(ev->layer)) {
+		return 0;
+	}
+
+	/* Returning from a recognized temporary transition restores internal
+	 * keymap state; it is not a real user-visible layer toggle. */
+	if (ev->state && ev->layer < 32 &&
+	    (silent_return_layer_mask & BIT(ev->layer)) != 0U) {
+		silent_return_layer_mask &= ~BIT(ev->layer);
+		pending_layer_valid = false;
+		k_work_cancel_delayable(&layer_indicator_work);
+		return 0;
+	}
+
+	pending_layer = ev->layer;
 	pending_layer_state = ev->state;
 	pending_layer_valid = true;
+	pending_layer_event_ms = k_uptime_get_32();
 
 	uint32_t delay_ms = CONFIG_WS2812_WIDGET_LAYER_DEBOUNCE_MS;
 
